@@ -3,9 +3,17 @@ set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 verifier=$repo_root/scripts/verify-channel.sh
-for tool in curl ssh-keygen sha256sum jq python3; do
+for tool in curl ssh-keygen jq python3; do
   command -v "$tool" >/dev/null || { echo "missing required test tool: $tool" >&2; exit 1; }
 done
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_file() { sha256sum "$1" | awk '{ print $1 }'; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_file() { shasum -a 256 "$1" | awk '{ print $1 }'; }
+else
+  echo "missing required test tool: sha256sum or shasum" >&2
+  exit 1
+fi
 openssl_bin=
 for candidate in "${OPENSSL_BIN:-}" openssl \
   /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/opt/openssl@3/bin/openssl; do
@@ -122,7 +130,7 @@ publish() {
       ifhost_darwin_amd64.tar.gz ifhost_darwin_arm64.tar.gz \
       ifhost_linux_amd64.tar.gz ifhost_linux_arm64.tar.gz \
       ifhost_windows_amd64.zip ifhost_windows_arm64.zip; do
-      digest=$(sha256sum "$channel/dl/$archive" | awk '{ print $1 }')
+      digest=$(sha256_file "$channel/dl/$archive")
       printf 'artifact.%s=%s\n' "$archive" "$digest"
     done
   } > "$channel/dl/release.txt"
@@ -201,7 +209,7 @@ origin=http://127.0.0.1:$(cat "$test_root/port")
 
 legacy_source=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 publish "20260903-010203" "$legacy_source"
-legacy_sha=$(sha256sum "$channel/dl/release.txt" | awk '{ print $1 }')
+legacy_sha=$(sha256_file "$channel/dl/release.txt")
 cat > "$test_root/previous-state.json" <<EOF
 {
   "schema": 1,

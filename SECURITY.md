@@ -44,8 +44,8 @@ enforces these transitions:
 2. Reusing a timestamp with another identity is rejected.
 3. Reusing an identity is allowed only when the source commit and complete
    signed record digest are unchanged.
-4. Every identity newer than the bootstrap release must include the full
-   40-character signed source commit as its suffix.
+4. Once an accepted identity includes the full 40-character signed source
+   commit as its suffix, every newer identity must include that suffix.
 
 Those rules make a whole-snapshot replay observable after any successful audit;
 checking only the internally consistent current response would not.

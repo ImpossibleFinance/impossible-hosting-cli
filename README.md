@@ -53,11 +53,12 @@ a previous audit exists but its state is unavailable.
 
 A repeated build identity is accepted only when the signed source commit and
 the complete signed release record are byte-for-byte unchanged. An advance
-must have a later UTC timestamp and the form
-`YYYYMMDD-HHMMSS-<40-character-source-commit>`; the suffix must equal the
-`source_commit` in the SSHSIG record. Consequently, replaying an older complete
-signed snapshot after a newer observation fails instead of resetting the
-verifier's history.
+must have a later UTC timestamp. The legacy `YYYYMMDD-HHMMSS` form remains
+valid only while the previously accepted identity is also legacy. Once the
+channel records `YYYYMMDD-HHMMSS-<40-character-source-commit>`, every later
+identity must keep that form and its suffix must equal the `source_commit` in
+the SSHSIG record. Consequently, replaying an older complete signed snapshot
+after a newer observation fails instead of resetting the verifier's history.
 
 ## Release metadata
 

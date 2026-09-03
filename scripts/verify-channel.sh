@@ -16,9 +16,17 @@ else
   exit 1
 fi
 
-for tool in curl ssh-keygen sha256sum jq python3; do
+for tool in curl ssh-keygen jq python3; do
   command -v "$tool" >/dev/null || { echo "missing required verifier: $tool" >&2; exit 1; }
 done
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256_file() { sha256sum "$1" | awk '{ print $1 }'; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256_file() { shasum -a 256 "$1" | awk '{ print $1 }'; }
+else
+  echo "missing required verifier: sha256sum or shasum" >&2
+  exit 1
+fi
 for file in "$allowed_signers" "$previous_state"; do
   test -f "$file" || { echo "missing verifier input: $file" >&2; exit 1; }
 done
@@ -57,7 +65,7 @@ fetch "$origin/cli/version" "$verify_root/version.json" 1048576
 
 ssh-keygen -Y verify -f "$allowed_signers" -I ifhost -n ifhost-release \
   -s "$verify_root/release.txt.sshsig" < "$verify_root/release.txt" >/dev/null
-release_sha256=$(sha256sum "$verify_root/release.txt" | awk '{ print $1 }')
+release_sha256=$(sha256_file "$verify_root/release.txt")
 
 python3 - \
   "$verify_root/release.txt" "$verify_root/version.json" "$allowed_signers" \
@@ -289,7 +297,7 @@ PY
 build_id=$(jq -r .build_id "$verify_root/parsed.json")
 while IFS=$'\t' read -r name digest; do
   fetch "$origin/dl/$name?b=$build_id" "$verify_root/$name" 67108864
-  actual=$(sha256sum "$verify_root/$name" | awk '{ print $1 }')
+  actual=$(sha256_file "$verify_root/$name")
   test "$actual" = "$digest" || { echo "live archive digest mismatch for $name" >&2; exit 1; }
 
   fetch "$origin/dl/$name.sha256" "$verify_root/$name.sha256" 1024
