@@ -1,0 +1,88 @@
+<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>ifhost CLI — downloads</title>
+<link rel=preconnect href="https://fonts.googleapis.com">
+<link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@400;600;700&family=Zilla+Slab:wght@600;700&display=swap" rel=stylesheet>
+<style>
+/* The site's own palette and type. Duplicated rather than imported: this page
+   is served from a different origin and cannot reach styles.css. If the
+   palette moves, it moves here too. */
+:root{--bg:#f6ecda;--panel:#fffaf0;--panel-line:rgba(90,62,38,.14);--ink:#362314;
+--muted:#6f5940;--terracotta:#c1613c;
+--font-body:"Libre Franklin",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+--font-display:"Zilla Slab",ui-serif,Georgia,serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font-body);
+line-height:1.6;padding:48px 20px}
+.wrap{max-width:660px;margin:0 auto}
+.brand{display:inline-flex;align-items:center;gap:10px;font-family:var(--font-display);
+font-weight:700;font-size:18px;margin-bottom:26px;text-decoration:none;color:var(--ink)}
+.mark{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;
+background:var(--terracotta);color:#fff8ee;font-size:13px}
+h1{font-family:var(--font-display);font-size:34px;margin:0 0 6px}
+.sub{color:var(--muted);margin:0 0 26px}
+.card{background:var(--panel);border:1px solid var(--panel-line);border-radius:16px;
+padding:22px;margin-bottom:18px}
+h2{font-family:var(--font-display);font-size:15px;margin:0 0 12px}
+pre{background:#2c1d12;color:#f6ecda;padding:14px 16px;border-radius:10px;
+overflow-x:auto;margin:0;font-size:13.5px}
+ul{list-style:none;margin:0;padding:0}
+li{border-bottom:1px solid var(--panel-line)}
+li:last-child{border-bottom:0}
+a.dl{display:flex;justify-content:space-between;gap:12px;padding:11px 2px;
+text-decoration:none;color:var(--ink);font-size:14.5px}
+a.dl:hover{color:var(--terracotta)}
+a.dl .sz{color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
+.note{color:var(--muted);font-size:13.5px;margin:14px 0 0}
+.foot{color:var(--muted);font-size:12.5px;margin-top:24px}
+code{background:rgba(90,62,38,.08);padding:1px 5px;border-radius:5px;font-size:.92em}
+</style>
+<div class=wrap>
+<a class=brand href="https://host.impossibuild.ai"><span class=mark>if</span>ifhost</a>
+<h1>ifhost CLI</h1>
+<p class=sub>Deploy websites and backends from your terminal.</p>
+
+<div class=card>
+<h2>Install on macOS or Linux</h2>
+<pre>dir="$(mktemp -d)"; trap 'rm -rf "$dir"' EXIT
+curl --fail --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  https://host.impossibuild.ai/install --output "$dir/install"
+curl --fail --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  https://host.impossibuild.ai/install.sshsig --output "$dir/install.sshsig"
+printf '%s\n' 'ifhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEv+FR+Wibo0JJPEmmJfqQz2wsoBkrCLatDZ8XwZq2zJ' &gt; "$dir/allowed_signers"
+ssh-keygen -Y verify -f "$dir/allowed_signers" -I ifhost -n ifhost-release \
+  -s "$dir/install.sshsig" &lt; "$dir/install"
+less "$dir/install"
+sh "$dir/install"</pre>
+<p class=note>The trust key above is maintained on this independent release site; it is not supplied by the API host being authenticated.</p>
+</div>
+
+<div class=card>
+<h2>Install on Windows</h2>
+<pre>$Dir = Join-Path ([IO.Path]::GetTempPath()) "ifhost-$([guid]::NewGuid())"
+New-Item -ItemType Directory $Dir | Out-Null
+$Installer = Join-Path $Dir 'install.ps1'
+$Signature = Join-Path $Dir 'install.ps1.sshsig'
+$Allowed = Join-Path $Dir 'allowed_signers'
+Invoke-WebRequest https://host.impossibuild.ai/install.ps1 -OutFile $Installer
+Invoke-WebRequest https://host.impossibuild.ai/install.ps1.sshsig -OutFile $Signature
+[IO.File]::WriteAllText($Allowed, "ifhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEv+FR+Wibo0JJPEmmJfqQz2wsoBkrCLatDZ8XwZq2zJ`n")
+$Verify = 'ssh-keygen -Y verify -f "{0}" -I ifhost -n ifhost-release -s "{1}" &lt; "{2}"' -f $Allowed,$Signature,$Installer
+cmd /d /c $Verify
+if ($LASTEXITCODE -ne 0) { throw 'Installer signature verification failed' }
+Get-Content $Installer
+&amp; $Installer
+Remove-Item -Recurse -Force $Dir</pre>
+</div>
+
+<div class=card>
+<h2>Or download directly</h2>
+<ul>
+<li><a class=dl href="ifhost_darwin_amd64.tar.gz"><span>macOS (Intel)</span><span class=sz>5.0M</span></a></li><li><a class=dl href="ifhost_darwin_arm64.tar.gz"><span>macOS (Apple Silicon)</span><span class=sz>4.7M</span></a></li><li><a class=dl href="ifhost_linux_amd64.tar.gz"><span>Linux (x86-64)</span><span class=sz>5.0M</span></a></li><li><a class=dl href="ifhost_linux_arm64.tar.gz"><span>Linux (ARM64)</span><span class=sz>4.5M</span></a></li><li><a class=dl href="ifhost_windows_amd64.zip"><span>Windows (x86-64)</span><span class=sz>5.1M</span></a></li><li><a class=dl href="ifhost_windows_arm64.zip"><span>Windows (ARM64)</span><span class=sz>4.6M</span></a></li>
+</ul>
+<p class=note>A <code>.sha256</code> sidecar detects corruption but does not authenticate a release. Verify <code>release.txt.sshsig</code> first, then compare the archive with the digest in that signed record. The CLI release repository documents the complete procedure.</p>
+</div>
+
+<p class=foot>Build 20260905-33eaa7f</p>
+</div>
