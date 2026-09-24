@@ -99,7 +99,7 @@ jobs:
       - name: Verify the live release channel
         run: |
           scripts/verify-channel.sh \
-            https://host.impossibuild.ai \
+            https://innstance.impossibuild.ai \
             release-signers \
             "$RUNNER_TEMP/previous-channel-state.json" \
             "$RUNNER_TEMP/channel-state.json"

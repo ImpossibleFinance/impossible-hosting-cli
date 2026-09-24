@@ -14,13 +14,13 @@ installer="$(mktemp)"
 trap 'rm -f "$installer"' EXIT
 curl --fail --show-error --location --proto '=https' --proto-redir '=https' \
   --tlsv1.2 --connect-timeout 10 --max-time 60 --max-filesize 1048576 \
-  https://host.impossibuild.ai/install --output "$installer"
+  https://innstance.impossibuild.ai/install --output "$installer"
 less "$installer"
 sh "$installer"
 ```
 
 Windows users can inspect and run
-[`install.ps1`](https://host.impossibuild.ai/install.ps1) instead.
+[`install.ps1`](https://innstance.impossibuild.ai/install.ps1) instead.
 
 The installer fetches `/dl/release.txt` and `/dl/release.txt.sshsig`, verifies
 the SSHSIG with the public key in `release-signers`, selects one of the six
@@ -35,7 +35,7 @@ On a system with Bash, curl, OpenSSH, jq, Python 3, SHA-256 tools, and OpenSSL
 
 ```sh
 scripts/verify-channel.sh \
-  https://host.impossibuild.ai \
+  https://innstance.impossibuild.ai \
   release-signers \
   channel-state.json \
   /tmp/ifhost-channel-state.json
@@ -64,10 +64,10 @@ after a newer observation fails instead of resetting the verifier's history.
 
 The live endpoints are:
 
-- `https://host.impossibuild.ai/dl/release.txt`
-- `https://host.impossibuild.ai/dl/release.txt.sshsig`
-- `https://host.impossibuild.ai/cli/version`
-- `https://host.impossibuild.ai/dl/ifhost_<os>_<arch>.<archive>`
+- `https://innstance.impossibuild.ai/dl/release.txt`
+- `https://innstance.impossibuild.ai/dl/release.txt.sshsig`
+- `https://innstance.impossibuild.ai/cli/version`
+- `https://innstance.impossibuild.ai/dl/ifhost_<os>_<arch>.<archive>`
 
 `release.txt` authenticates the build identity, source repository name, exact
 source commit, build mechanism, and archive digests. `/cli/version` carries the
