@@ -1,5 +1,10 @@
 # npx innstance
 
+> **Not published yet.** This package is not on npm. Until it is, published
+> with npm provenance from this repository, do not install or run anything
+> called `innstance` from npm: anyone could have registered that name.
+> (Remove this note in the release commit; see `RELEASING.md`.)
+
 Sign in to [Innstance](https://innstance.impossibuild.ai) and connect your
 coding agent to it, with nothing native to install:
 
