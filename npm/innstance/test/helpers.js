@@ -67,6 +67,7 @@ async function startFakeServer(overrides = {}) {
   const skill = testSkill();
   const state = {
     email: 'dev@example.com',
+    planTier: 'free',
     pendingPolls: 1,
     deny: false,
     mcp: 'json', // json | sse | missing | 500 | refuse (401 for every token) | 403
@@ -128,7 +129,7 @@ async function startFakeServer(overrides = {}) {
     }
     if (route === 'GET /auth/me') {
       if (!valid(bearerOf(req))) return json(res, 401, { error: 'unauthorized' });
-      return json(res, 200, { id: 'u1', email: state.email, plan_tier: 'free' });
+      return json(res, 200, { id: 'u1', email: state.email, plan_tier: state.planTier });
     }
     if (route === 'POST /auth/logout') {
       const token = bearerOf(req);

@@ -30,7 +30,7 @@ test('doctor passes on a healthy setup and changes nothing', async (t) => {
   for (const label of ['Node.js', 'Control plane', 'Session', 'MCP endpoint', 'Claude Code', 'Cursor']) {
     assert.match(line(out, label), /^ {2}ok/, label);
   }
-  assert.match(line(out, 'Session'), /dev@example\.com \(free plan\)/);
+  assert.match(line(out, 'Session'), /dev@example\.com \(Free plan\)/);
   assert.match(line(out, 'Claude Code'), /skill 20260924-1/);
   assert.equal(line(out, 'Codex'), '', 'agents that are not installed are not mentioned');
   assert.equal(fs.readFileSync(path.join(home, '.claude.json'), 'utf8'), before);
@@ -54,7 +54,22 @@ test('doctor names what is wrong and exits 1', async (t) => {
         fs.writeFileSync(file, JSON.stringify(doc));
       },
       label: 'Cursor',
-      want: /fail .*older session's token/,
+      want: /fail .*holds a token that has ended.*npx innstance --agents cursor/,
+    },
+    {
+      name: 'MCP endpoint rolled back while agents are connected',
+      break: ({ server }) => (server.state.mcp = 'missing'),
+      label: 'Cursor',
+      want: /fail .*connected in .*, but .*\/mcp is not available on this server/,
+    },
+    {
+      name: 'session forgotten here and the agent token revoked',
+      break: ({ server, home }) => {
+        fs.rmSync(path.join(home, '.impossible', 'npx-session.json'));
+        server.state.sessions.clear();
+      },
+      label: 'Claude Code',
+      want: /fail .*holds a token that has ended/,
     },
     {
       name: 'an agent config no longer parses',
@@ -99,4 +114,38 @@ test('doctor reports an unreachable control plane', async (t) => {
   const { ctx, text } = makeContext(tempHome(t), null, { env: { IMPOSSIBLE_API_URL: 'http://127.0.0.1:1' } });
   assert.equal(await main(['doctor'], ctx), 1);
   assert.match(line(text(), 'Control plane'), /fail .*could not reach/);
+});
+
+test('doctor names plans the way people buy them', async (t) => {
+  const cases = [
+    { tier: 'free', want: 'Free' },
+    { tier: 'hobby', want: 'Hobby' },
+    { tier: 'pro', want: 'Pro' },
+    { tier: 'team', want: 'Studio' },
+  ];
+  const { server, home } = await connected(t);
+  for (const c of cases) {
+    server.state.planTier = c.tier;
+    const { ctx, text } = makeContext(home, server);
+    assert.equal(await main(['doctor'], ctx), 0, text());
+    assert.match(line(text(), 'Session'), new RegExp(`\\(${c.want} plan\\)`), c.tier);
+  }
+});
+
+test('doctor checks the agents\' own tokens when this machine has no saved session', async (t) => {
+  const { server, home } = await connected(t);
+  fs.rmSync(path.join(home, '.impossible', 'npx-session.json'));
+  const { ctx, text } = makeContext(home, server);
+  assert.equal(await main(['doctor'], ctx), 0, text());
+  assert.match(line(text(), 'Session'), /warn .*not signed in/);
+  assert.match(line(text(), 'MCP endpoint'), /ok .*initialized/, 'probed with the agent\'s working token');
+  assert.match(line(text(), 'Cursor'), /ok .*connected/);
+});
+
+test('doctor warns about a token file other users can read', { skip: process.platform === 'win32' }, async (t) => {
+  const { server, home } = await connected(t);
+  fs.chmodSync(path.join(home, '.cursor', 'mcp.json'), 0o644);
+  const { ctx, text } = makeContext(home, server);
+  assert.equal(await main(['doctor'], ctx), 0, text());
+  assert.match(text(), /warn {2}Cursor: .*readable by other users \(mode 644\); run: npx innstance --agents cursor/);
 });
