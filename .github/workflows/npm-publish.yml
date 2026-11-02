@@ -67,7 +67,9 @@ jobs:
         run: npm install --global npm@11.21.1
       - name: Run the package tests
         run: npm test
-      - name: The pinned skill still matches what GitHub serves
+      - name: The pinned skill is on the skill repository's main and matches what GitHub serves
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # only raises the API rate limit
         run: node scripts/pin-skill.js --check
       - name: Publish with provenance
         run: npm publish --provenance --access public
