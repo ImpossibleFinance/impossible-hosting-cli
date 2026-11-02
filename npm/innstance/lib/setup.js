@@ -120,7 +120,11 @@ async function setup(ctx, opts) {
     } else if (probe.state === 'auth') {
       writeNew = false;
       failures++;
-      ctx.err(`MCP endpoint ${mcp}: ${probe.detail}; agent configs were not written. Try npx innstance --relogin.`);
+      // A saved session may have ended since it was checked; a session minted
+      // a moment ago being refused means the endpoint wants another kind of
+      // token, which signing in the same way again would not produce.
+      const next = session.reused ? 'Try npx innstance --relogin.' : 'Signing in again gives the same kind of session, so try the newest version: npx innstance@latest';
+      ctx.err(`MCP endpoint ${mcp}: ${probe.detail}; agent configs were not written. ${next}`);
     } else if (probe.state === 'forbidden') {
       writeNew = false;
       failures++;

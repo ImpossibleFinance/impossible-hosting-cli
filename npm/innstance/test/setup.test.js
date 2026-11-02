@@ -207,7 +207,12 @@ test('no agent is left holding a token a new sign-in ended', async (t) => {
   const token = savedSession(again.ctx).token;
   assert.equal(tokensIn(home).cursor, token);
   assert.equal(server.validToken(token), true);
-  assert.match(again.err.join('\n'), /refused this token/);
+  assert.match(again.err.join('\n'), /refused this token.*npx innstance@latest/, 'a fresh session refused: --relogin would only loop');
+
+  // A saved session that is refused may simply have ended: sign in again.
+  const reused = makeContext(home, server);
+  assert.equal(await main([], reused.ctx), 1, reused.text());
+  assert.match(reused.err.join('\n'), /refused this token.*Try npx innstance --relogin/);
 });
 
 test('a session revoked from the dashboard leads to a fresh sign-in', async (t) => {
