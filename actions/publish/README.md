@@ -297,9 +297,11 @@ it runs the CLI:
 
 1. It fetches `/dl/release.txt` and its SSHSIG.
 2. It verifies the signature against the pinned key.
-3. It parses the signed record strictly.
-4. It checks the downloaded archive against the SHA-256 in that record.
-5. It checks that the archive holds exactly one regular file.
+3. It requires each field it uses (build ID, source repository and commit,
+   this runner's archive digest) exactly once, in its expected format.
+4. It refuses a release older than the checkpoint in `channel-state.json`.
+5. It checks the downloaded archive against the SHA-256 in that record.
+6. It checks that the archive holds exactly one regular file.
 
 A compromised release origin cannot swap the key along with the binary.
 Nor can it serve a signed release older than the checkpoint in
