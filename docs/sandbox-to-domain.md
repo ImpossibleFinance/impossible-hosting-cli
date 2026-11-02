@@ -15,14 +15,16 @@ command against its linked source before you rely on it in automation.
 
 ## Choose publish or deploy
 
-| What you have | Use | Command |
-| --- | --- | --- |
-| One self-contained HTML page | publish | `innstance publish --name <name> page.html` |
-| PDFs or images | publish | `innstance publish --name <name> a.pdf b.png` |
-| A server, API, bot, SSR app, or a site made of many files | deploy | `innstance init`, `innstance deploy`, then push and start it (see below) |
+| What you have | Use |
+| --- | --- |
+| One self-contained HTML page (styles and scripts inline), or PDFs and images | publish: `innstance publish --name <name> page.html` |
+| A folder of static files, such as a `dist/` with HTML, CSS, JavaScript and assets | deploy, served by a small file server ([below](#a-folder-of-static-files)) |
+| A server, API, bot or SSR app | deploy ([below](#an-app)) |
 
-Publish needs no machine and is live in seconds. Deploy runs your code on a
-runner VM.
+Publish needs no machine and is live in seconds. Deploy runs on an
+always-on runner VM. `innstance publish` takes files, not folders, today,
+so publishing only the `index.html` of a build folder leaves its CSS,
+JavaScript and images behind: the job succeeds and the page is broken.
 
 ## Keep your token out of the sandbox
 
@@ -52,29 +54,74 @@ mkdir site && tar -xzf site.tgz -C site
 ```
 
 `/path/to/output` is wherever your agent wrote its build, for example
-`dist` or `out`.
+`dist` or `out`. The vendor recipes below end with `site.tgz` copied out
+(InstaBox copies the folder itself, straight into `site/`). Unpack it as
+above, then put `site/` live as one of the next three sections shows.
 
-**Publish it** (static):
+Treat `site/` as untrusted: an agent wrote it. Run `innstance init` and
+`innstance deploy` in a directory of your own, never inside `site/`. An
+`impossible.toml` there would otherwise set the app, its size, its
+environment and its secret references. `machines push` never uploads an
+`impossible.toml`, so one inside `site/` has no effect when you push it.
+
+### One page
 
 ```sh
-innstance publish --name my-demo site/index.html
+innstance publish --name my-demo site/report.html
 innstance sites domains add my-demo www.example.com
 ```
 
-**Deploy it** (an app):
+### A folder of static files
+
+The runner VM has no web server of its own, so install Python and serve
+the folder with its built-in file server:
 
 ```sh
-cd site
-innstance init --app my-demo --port 3000
-innstance deploy --yes
-innstance machines push --app my-demo . --to /app --yes-replace
-innstance machines exec --app my-demo -- sh -c "cd /app && setsid nohup node server.js </dev/null >/tmp/app.log 2>&1 &"
+mkdir -p deploy && cd deploy          # a directory of your own, not site/
+innstance init --app my-demo --port 8080
+innstance deploy --app my-demo --yes
+innstance machines install --app my-demo python3
+innstance machines push --app my-demo ../site --to /app --yes-replace
+innstance machines exec --app my-demo -- sh -c 'cd /app && { setsid nohup python3 -m http.server 8080 --bind 0.0.0.0 </dev/null >/tmp/app.log 2>&1 & }'
+curl -sS -o /dev/null -w '%{http_code}\n' --max-time 30 https://my-demo.innstance.app/
 innstance machines domains add www.example.com --app my-demo
 ```
 
+### An app
+
+The same steps, with the app's runtime and its own start command. For a
+Node server on port 3000:
+
+```sh
+mkdir -p deploy && cd deploy          # a directory of your own, not site/
+innstance init --app my-demo --port 3000
+innstance deploy --app my-demo --yes
+innstance machines install --app my-demo nodejs npm
+innstance machines push --app my-demo ../site --to /app --yes-replace
+innstance machines exec --app my-demo -- sh -c 'cd /app && npm ci --omit=dev && { setsid nohup node server.js </dev/null >/tmp/app.log 2>&1 & }'
+curl -sS -o /dev/null -w '%{http_code}\n' --max-time 30 https://my-demo.innstance.app/
+innstance machines domains add www.example.com --app my-demo
+```
+
+Notes for both:
+
+- `init` writes the VM's size as well as its port. Run it for a new app
+  only; for an app that already runs, deploy from the `impossible.toml` you
+  deployed it with, or `init` resizes it to the defaults.
+- `deploy` restarts the VM of an app that already exists, so install and
+  start again after it, as above. Nothing restarts the server later; the
+  [Action's README](../actions/publish/README.md#what-deploy-mode-does-not-do)
+  lists when it stops.
+- The app is live when the `curl` line prints 200 (or another 2xx or 3xx),
+  not when `exec` returns: the server starts in the background and logs to
+  `/tmp/app.log` on the VM. Use the address `innstance deploy` printed if it
+  differs from the one above.
+- `npm ci` needs a `package-lock.json`; use `npm install --omit=dev` without
+  one.
+
 `domains add` prints the DNS records to create. Run it again once they
-resolve. The [Action](../actions/publish/README.md) runs the publish or
-deploy steps and the domain step for you, on every push.
+resolve. The [Action](../actions/publish/README.md) runs these steps, the
+health check and the domain step for you, on every push.
 
 ## InstaBox
 
@@ -85,18 +132,21 @@ npm install -g instabox          # in CI, pin an exact version: instabox@<versio
 export INSTABOX_API_KEY=...      # create one with: instabox keys create --name ci
 mkdir -p site
 instabox cp -r my-box:/data/home/app/dist/. site
-innstance publish --name my-demo site/index.html
 ```
 
 - `instabox cp [-r] SRC DST` copies in either direction. `box:PATH` names a
   path in the machine.
 - A source ending in `/.` copies the directory's contents into `DST` itself.
-- `/data/home` is the default working directory for `instabox exec`.
-  Replace `app/dist` with your output directory.
+- `/data/home` is the machine's home directory. Replace `app/dist` with
+  your output directory.
 - For a single file: `instabox cp my-box:/data/home/app/report.html .`
 
-**Not verified:** whether `cp` creates `DST` when it does not exist. The
-`mkdir -p` above avoids depending on it.
+**Not verified:**
+
+- Whether `cp` creates `DST` when it does not exist. The `mkdir -p` above
+  avoids depending on it.
+- The working directory `instabox exec` uses when `--cwd` is not given. The
+  recipe uses absolute paths so it does not depend on it.
 
 ## E2B
 
@@ -234,8 +284,10 @@ await sandbox.downloadFile({ path: '/tmp/site.tgz' }, { path: 'site.tgz', cwd: p
 
 ## In one workflow: sandbox to your domain
 
-This GitHub Actions job pulls a build out of an E2B sandbox and publishes
-it. The same shape works with any recipe above: swap the first step.
+This GitHub Actions job pulls a build folder out of an E2B sandbox and
+serves it on your domain. The same shape works with any recipe above: swap
+the first step. For a single self-contained page, use the Action's default
+`mode: publish` with `path: site/report.html` instead.
 
 ```yaml
 name: ship-sandbox-build
@@ -247,6 +299,10 @@ on:
         required: true
 permissions:
   contents: read
+# One deploy of this app at a time: each one restarts its VM.
+concurrency:
+  group: innstance-my-demo
+  cancel-in-progress: false
 jobs:
   ship:
     runs-on: ubuntu-latest
@@ -271,8 +327,12 @@ jobs:
       - uses: ImpossibleFinance/impossible-hosting-cli/actions/publish@<commit-sha>
         with:
           token: ${{ secrets.INNSTANCE_TOKEN }}
+          mode: deploy
           name: my-demo
-          path: site/index.html
+          path: site
+          port: 8080
+          packages: python3
+          start-command: exec python3 -m http.server 8080 --bind 0.0.0.0
           domain: demo.example.com
 ```
 
@@ -280,5 +340,8 @@ jobs:
   expression inside `run`. So a crafted input cannot become shell code.
 - The vendor key and the Innstance token are separate secrets. Each step
   gets only the one it needs.
+- `path: site` pushes the sandbox's output, while the working directory
+  stays the job's own. An `impossible.toml` the agent left in `site/` is
+  neither read nor pushed. Never point `working-directory` at the output.
 - Replace `<commit-sha>` with a full commit of this repository, as the
   [Action's README](../actions/publish/README.md#pin-the-action) explains.
