@@ -3,8 +3,8 @@
 // A small JSON-with-comments reader and surgical editor.
 //
 // The agent configs this package edits are shared files: ~/.claude.json holds
-// every Claude Code setting and project history, and OpenCode and Cursor
-// accept comments and trailing commas in theirs. Parsing such a file and
+// every setting and the project history of that agent, and OpenCode and
+// Cursor accept comments and trailing commas in theirs. Parsing such a file and
 // writing JSON.stringify(...) back would reformat the whole thing, drop every
 // comment, and reorder nothing but still touch every line. Instead the file is
 // parsed into a tree that remembers where each value starts and ends, and an

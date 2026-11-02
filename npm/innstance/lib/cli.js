@@ -21,7 +21,9 @@ Options
   --no-browser       print the sign-in link without opening a browser
   --relogin          sign in again even when this machine has a working session
   --skip-mcp-check   write agent configs without first checking the MCP endpoint
-  --force            replace an "innstance" skill directory this tool did not create
+  --force            replace an "innstance" MCP entry or skill directory this tool
+                     did not create, and write the token into a config that sits
+                     in a git repository
   -h, --help         show this help
   -v, --version      print the version
 

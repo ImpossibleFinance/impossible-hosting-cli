@@ -25,6 +25,10 @@ newer. It handles sign-in and agent setup only. The full `innstance` command-lin
 tool (deploys, logs, domains and the rest) is a separate, signed install
 described in the [docs](https://innstance.impossibuild.ai/docs).
 
+Installed globally (`npm i -g innstance`), the command is `innstance-setup`,
+not `innstance`. That name belongs to the full CLI, and a global npm install
+must not put something else ahead of it on your `PATH`.
+
 ## Commands
 
 ```sh
@@ -39,8 +43,8 @@ npx innstance remove           # disconnect agents and sign this machine out
 | `--server <origin>` | The control plane to use. The default is `https://innstance.impossibuild.ai`. `IMPOSSIBLE_API_URL` does the same, as it does for the Go CLI. Only `https` origins and plain-`http` loopback are accepted. |
 | `--no-browser` | Print the sign-in link without opening a browser. |
 | `--relogin` | Sign in again even when this machine already has a working session. |
-| `--skip-mcp-check` | Write agent configs without first checking that the MCP endpoint answers. |
-| `--force` | Replace an existing `innstance` skill directory that this tool did not create. |
+| `--skip-mcp-check` | Sign in and write agent configs without first checking that the MCP endpoint answers. |
+| `--force` | Replace an `innstance` MCP entry or skill directory that this tool did not create, and write the token into a config that sits in a git repository. |
 
 `setup` is safe to run again. The second run reuses this machine's session
 without opening a browser, connects any agent you name, and updates the skill.
@@ -57,14 +61,29 @@ without opening a browser, connects any agent you name, and updates the skill.
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `XDG_CONFIG_HOME` move these locations
 the same way they do for the agents themselves. Codex, Cursor and OpenCode all
 read the shared `~/.agents/skills` directory, so one copy serves all three.
-The session is saved in `~/.impossible/npx-session.json`.
+The session is saved in `~/.impossible/npx-session.json`, one per control
+plane.
 
 Each edit changes only the `innstance` entry. Other servers, other settings,
-comments, formatting and key order stay exactly as they were. If a file can't
-be read, or defines `innstance` in a form the tool can't rewrite safely,
-the tool leaves that file untouched, says so, and still sets up the other
-agents. A config file that is a symlink, such as one kept in a dotfiles
-repository, is edited through the link. The link itself is not replaced.
+comments, formatting, line endings and key order stay exactly as they were.
+An `innstance` entry that already points at this control plane is updated in
+place: only its `url` and `Authorization` header change, so anything you set
+on it yourself (turning it off, tool approvals, timeouts) is kept. An
+`innstance` entry that points somewhere else, or runs a local command, is left
+alone unless you pass `--force`. If a file can't be read, or defines
+`innstance` in a form the tool can't rewrite safely, the tool leaves that file
+untouched, says so, and still sets up the other agents.
+
+A config file that is a symlink is edited through the link, and setup says
+where the token was written. The link itself is not replaced. A config whose
+real file is inside a git repository, such as a dotfiles repository, is not
+written at all unless you pass `--force`, because a token committed there
+would stay live. The same goes for `~/.impossible` if your home directory is a
+git repository.
+
+Run it as yourself, not with `sudo`: files it writes are owner-only, and as
+root they would end up owned by root, where your agents cannot read them.
+`setup` and `remove` refuse to run as root in another user's home.
 
 ## Your token
 
@@ -81,9 +100,17 @@ repository, is edited through the link. The link itself is not replaced.
   sent to a different `--server`. Requests never follow redirects, and the
   approval link is opened only if it is `<control plane>/auth/device`.
 * **Kept current everywhere.** Signing in again replaces this machine's
-  previous session on the server, so `setup` also updates every agent config
-  that already points at this control plane, not just the agents you named.
-  No agent is left holding a dead token.
+  previous session on the server. So after a new sign-in, `setup` also gives
+  the new token to every agent config that already points at this control
+  plane, not just the agents you named, even when it writes no new config.
+  No agent is left holding a dead token. When the saved session is reused,
+  agents you did not name are left alone.
+* **A limit per account.** Each signed-in machine holds a session that does
+  not expire, and the Go CLI's sessions count too. An account can hold 8. A
+  fresh home directory (a new laptop, a container, a Codespace) signs in as a
+  new machine, so revoke the ones you no longer use from your dashboard. At
+  the limit, the approval page shows an error and `npx innstance` waits until
+  the sign-in code expires.
 
 The token is written into each config as an `Authorization` header. An
 environment-variable reference would keep it out of the file, but it only works
@@ -101,12 +128,18 @@ in that pin, or nothing is installed. A newer skill version that is already
 installed, for example by the Go CLI, is kept. A directory named `innstance`
 that is not an Innstance skill is left alone unless you pass `--force`.
 
+A copy this tool installs carries a small `.npx-innstance.json` file that
+records the hash of each file it wrote. `remove` uses it to delete only what
+this tool installed and nobody changed since.
+
 To move the pin to a newer reviewed commit:
 
 ```sh
 node scripts/pin-skill.js <40-character commit>   # rewrites lib/skill-pin.json
 node scripts/pin-skill.js --check                 # verifies the pin against GitHub
 ```
+
+Both check that the commit is on the skill repository's `main`.
 
 ## doctor
 
@@ -115,9 +148,12 @@ node scripts/pin-skill.js --check                 # verifies the pin against Git
 * the Node.js version;
 * that the control plane answers `/health`;
 * that the saved session is still valid;
-* that the MCP endpoint answers an `initialize` request with that session;
-* that each agent's `innstance` entry points at the right endpoint, holds the
-  current token and has the skill installed.
+* that the MCP endpoint answers an `initialize` request with that session (or,
+  with no saved session, with a connected agent's token);
+* that each agent's `innstance` entry points at the right endpoint, holds a
+  token the server still accepts, can reach a working MCP endpoint, and has
+  the skill installed. A config that other users can read, or that sits in a
+  git repository, is flagged.
 
 Each problem is reported with the command that fixes it. Warnings, such as an
 agent not connected yet, don't fail the check. Failures make doctor exit with
@@ -127,21 +163,31 @@ status 1.
 
 `npx innstance remove`:
 
-* deletes the `innstance` entries this tool wrote, but only those that point
-  at this control plane;
-* deletes the skill files it installed;
-* ends the session on the server and forgets it locally.
+* deletes each agent's `innstance` entry that points at this control plane's
+  MCP endpoint, whoever wrote it, and leaves entries that point anywhere else;
+* deletes the skill copies this tool installed, unless a file in them has
+  changed since; copies written by the Go CLI or anyone else are left alone;
+* ends this control plane's session on the server, and forgets it locally
+  once the server has confirmed it ended. If the server can't end it, the
+  token is kept, so you can run `remove` again or revoke it from your
+  dashboard.
 
 With `--agents`, it disconnects only those agents. It keeps the session, and
-it keeps any skill copy that another agent still uses.
+it keeps any skill copy that another agent still uses. Sessions for other
+control planes are kept; `remove` says how to end them.
 
 ## When MCP isn't available yet
 
-If the control plane has no MCP endpoint yet (it answers 404), `setup` signs
-you in and installs the skill, but it doesn't write any MCP config. An agent
-pointed at a missing server would show a failure on every start. Run
-`npx innstance` again once the endpoint is live. `--skip-mcp-check` writes the
-configs anyway.
+If the control plane has no MCP endpoint yet (it answers 404), `setup`
+installs the skill but doesn't sign you in or write any MCP config. An agent
+pointed at a missing server would show a failure on every start, and a session
+nothing uses is one more credential to leak. Run `npx innstance` again once
+the endpoint is live. `--skip-mcp-check` signs in and writes the configs
+anyway.
+
+If the endpoint accepts the sign-in but refuses to let it use MCP (HTTP 403),
+signing in again would not help. Run the newest version,
+`npx innstance@latest`.
 
 ## Network
 
@@ -153,16 +199,25 @@ The tool connects directly to the control plane and to
 Releases are published from the public
 [impossible-hosting-cli](https://github.com/ImpossibleFinance/impossible-hosting-cli)
 repository, through GitHub Actions and npm trusted publishing, with
-[provenance](https://docs.npmjs.com/generating-provenance-statements). To check
-an installed copy:
+[provenance](https://docs.npmjs.com/generating-provenance-statements).
+
+The npm page for each version has a Provenance section that links to the
+commit and the workflow run that built it. From a terminal, this shows the
+attestations for a version:
 
 ```sh
-npm audit signatures
+npm view innstance@0.1.0 dist.attestations
 ```
 
-The npm page for each version links to the commit and workflow run that built
-it. The publish workflow runs only for a `npm-v<version>` tag on a commit that
-is already on `main`.
+`npm audit signatures` checks the dependencies installed in a project, not
+what `npx` runs from its cache. To verify the registry signature and the
+provenance of a version, install it into an empty project and audit that:
+
+```sh
+cd "$(mktemp -d)" && npm init -y >/dev/null
+npm install --ignore-scripts innstance@0.1.0
+npm audit signatures
+```
 
 ## Development
 
