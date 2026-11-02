@@ -150,7 +150,8 @@ The action runs these steps, in this order:
 1. If the working directory has no `impossible.toml`, it writes one that
    names only the app, its port and its volume. An app that already exists
    keeps its size and its volume, and keeps its port unless `port` sets
-   one; a new app gets the platform's defaults, on port 8080 unless `port`
+   one; an existing app with no volume gets the 1 GB `/data` volume, and the
+   action says so. A new app gets the platform's defaults, on port 8080 unless `port`
    sets one, with the 1 GB `/data` volume every deploy adds to an app that
    has none. With an `impossible.toml`, every setting in it applies to the
    app (size, port, autostop, environment, volumes), and `name` and `port`

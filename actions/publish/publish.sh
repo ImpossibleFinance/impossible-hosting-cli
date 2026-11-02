@@ -340,7 +340,7 @@ write_app_config() {
     fi
     volume_count=$(jq -r '.volumes // [] | length' "$work/describe.json" 2>/dev/null || true)
     case $volume_count in
-      0) ;;
+      0) note "app $name has no volume, so deploy adds the 1 GB data volume at /data, which counts toward the plan's storage. To choose its name, size or mount path, commit an impossible.toml that declares a [[volumes]] entry" ;;
       1)
         volume_name=$(jq -r '.volumes[0].name // empty' "$work/describe.json")
         volume_mount=$(jq -r '.volumes[0].mount_path // empty' "$work/describe.json")

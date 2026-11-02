@@ -530,10 +530,11 @@ if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=running 
      'describe --json --app running' \
      'deploy --json --yes --app running' \
      'machines push --app running --to /app --yes-replace -- .' &&
-   expect_toml "$dir" "$(printf 'app = "running"\n\n[service]\ninternal_port = 5000\n')"; then
-  ok "deploy: keeps the port and size of an app that already exists"
+   expect_toml "$dir" "$(printf 'app = "running"\n\n[service]\ninternal_port = 5000\n')" &&
+   grep -Fq 'app running has no volume, so deploy adds the 1 GB data volume at /data' "$test_root/out"; then
+  ok "deploy: keeps the port and size of an app that already exists, and says a volume-less one gets the data volume"
 else
-  not_ok "deploy: keeps the port and size of an app that already exists"
+  not_ok "deploy: keeps the port and size of an app that already exists, and says a volume-less one gets the data volume"
 fi
 
 # The same app keeps its volume, named something other than the data
