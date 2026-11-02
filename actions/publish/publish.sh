@@ -258,7 +258,7 @@ report_records() {
 
 publish() {
   local -a files=() matches
-  local entry match url live
+  local entry match url live folder=
   [[ -z $start_command ]] || fail "start-command only applies to mode: deploy"
   [[ -n $paths_input ]] || fail "path is required for mode: publish (files, globs or a folder, one per line)"
   while IFS= read -r entry; do
@@ -273,15 +273,21 @@ publish() {
       files+=("${matches[@]}")
     else
       [[ -e $entry ]] || fail "path does not exist: $entry"
+      [[ ! -d $entry ]] || folder=$entry
       files+=("$entry")
     fi
   done < <(lines "$paths_input")
   [[ ${#files[@]} -gt 0 ]] || fail "path is required for mode: publish (files, globs or a folder, one per line)"
 
   # A folder goes to the CLI as it is: the CLI decides what static hosting
-  # accepts, and says what to do instead when it does not.
-  "$cli" publish --json --name "$name" -- "${files[@]}" > "$work/publish.json" ||
+  # accepts, so the day it publishes folders this action does too. Until
+  # then it refuses one before anything is uploaded.
+  if ! "$cli" publish --json --name "$name" -- "${files[@]}" > "$work/publish.json"; then
+    if [[ -n $folder ]]; then
+      fail "publish failed: $folder is a folder, and the installed CLI publishes files only. Serve a folder with mode: deploy (see 'A static site of many files' in this action's README)"
+    fi
     fail "publish failed; the CLI's explanation is above"
+  fi
   url=$(jq -r '.url // empty' "$work/publish.json")
   https_url "$url" || fail "publish returned no HTTPS URL"
   live=$(jq -r '.live // false' "$work/publish.json")

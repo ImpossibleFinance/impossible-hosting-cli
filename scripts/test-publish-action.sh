@@ -436,6 +436,13 @@ rejected "publish: rejects a start-command" "$dir" INNSTANCE_ACTION_NAME=x \
 CLI_CALLED=1 rejected "publish: fails when the CLI refuses" "$dir" INNSTANCE_ACTION_NAME=x \
   INNSTANCE_ACTION_PATH=index.html FAKE_FAIL=publish
 if [[ -s $dir/output ]]; then not_ok "a refused publish sets no outputs"; fi
+dir=$(new_workdir)
+mkdir "$dir/dist"
+CLI_CALLED=1 rejected "publish: a folder the CLI refuses points at a static deploy" "$dir" \
+  INNSTANCE_ACTION_NAME=folder INNSTANCE_ACTION_PATH=dist FAKE_FAIL=publish
+grep -Fq "dist is a folder, and the installed CLI publishes files only. Serve a folder with mode: deploy" "$test_root/out" ||
+  not_ok "a refused folder names the way to serve it"
+
 
 # expect_toml DIR CONTENT passes when the action wrote exactly this config.
 expect_toml() {

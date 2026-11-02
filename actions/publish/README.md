@@ -79,10 +79,35 @@ Static publishing accepts what `innstance publish` accepts:
 
 Running the workflow again with the same `name` replaces the whole site.
 
-A folder is passed to the CLI unchanged. The current CLI refuses a folder
-and says what it accepts instead, and your site is not changed. A website
-made of several files (HTML plus CSS, JavaScript and assets) needs
-`mode: deploy` today.
+A folder is passed to the CLI unchanged, so this action publishes folders
+as soon as the CLI does. The current CLI refuses a folder before anything
+is uploaded, your site is not changed, and the step fails with a pointer to
+the next section.
+
+## A static site of many files
+
+Until the CLI publishes folders, a build output such as `dist/` (HTML plus
+CSS, JavaScript and assets) is served from an app's runner VM:
+
+```yaml
+- uses: ImpossibleFinance/impossible-hosting-cli/actions/publish@<commit-sha>
+  with:
+    token: ${{ secrets.INNSTANCE_TOKEN }}
+    mode: deploy
+    name: my-site
+    path: dist
+    port: 8080
+    packages: python3
+    start-command: exec python3 -m http.server 8080 --bind 0.0.0.0
+```
+
+The runner VM has no web server of its own, so `packages` installs Python
+and its built-in file server serves `dist`. This is an app, not a static
+site: an always-on VM that counts against your plan's apps and memory like
+any other, and on a free account it is a 24-hour trial (the step repeats
+the platform's notice). Python's file server has no SPA fallback; a
+single-page app that routes on the client needs a server that sends
+`index.html` for unknown paths.
 
 ## Deploy an app
 
