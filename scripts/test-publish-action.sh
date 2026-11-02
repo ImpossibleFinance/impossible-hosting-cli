@@ -242,6 +242,8 @@ run_action() {
   local dir=$1
   shift
   : > "$dir/log"
+  : > "$dir/output"
+  : > "$dir/summary"
   (
     cd "$dir"
     env GITHUB_OUTPUT="$dir/output" GITHUB_STEP_SUMMARY="$dir/summary" \
@@ -286,6 +288,12 @@ if ! grep -Fq "$token" "$test_root/out" "$dir/summary" "$dir/output"; then
   ok "publish: the token never reaches the log, outputs or summary"
 else
   not_ok "publish: the token never reaches the log, outputs or summary"
+fi
+if grep -Fxq '  TXT  _innstance.www.example.com  proof-123' "$test_root/out" &&
+   ! grep -Fq 'unexpectedly' "$test_root/out"; then
+  ok "publish: lists every pending DNS record in the log"
+else
+  not_ok "publish: lists every pending DNS record in the log"
 fi
 
 dir=$(new_workdir)
@@ -368,8 +376,19 @@ rejected "rejects a domain with spaces" "$dir" INNSTANCE_ACTION_NAME=x \
 rejected "publish: rejects a missing path" "$dir" INNSTANCE_ACTION_NAME=x
 rejected "publish: rejects a path that does not exist" "$dir" INNSTANCE_ACTION_NAME=x \
   INNSTANCE_ACTION_PATH=missing.html
+rejected "publish: rejects a path of blank lines" "$dir" INNSTANCE_ACTION_NAME=x \
+  "INNSTANCE_ACTION_PATH=$(printf '  \n\n')"
 rejected "publish: rejects a glob that matches nothing" "$dir" INNSTANCE_ACTION_NAME=x \
   'INNSTANCE_ACTION_PATH=*.pdf'
+if grep -Fq 'matched nothing' "$test_root/out" && ! grep -Fq 'unexpectedly' "$test_root/out"; then
+  ok "an expected failure names its cause and nothing else"
+else
+  not_ok "an expected failure names its cause and nothing else"
+fi
+CLI_CALLED=1 rejected "an unreadable CLI answer stops the step" "$dir" INNSTANCE_ACTION_NAME=x \
+  INNSTANCE_ACTION_PATH=index.html INNSTANCE_ACTION_DOMAIN=x.example.com FAKE_DOMAINS='not json'
+grep -Fq 'stopped unexpectedly at line' "$test_root/out" ||
+  not_ok "an unexpected failure says where it stopped"
 rejected "publish: rejects a start-command" "$dir" INNSTANCE_ACTION_NAME=x \
   INNSTANCE_ACTION_PATH=index.html INNSTANCE_ACTION_START_COMMAND='node s.js'
 CLI_CALLED=1 rejected "publish: fails when the CLI refuses" "$dir" INNSTANCE_ACTION_NAME=x \
@@ -434,6 +453,9 @@ dir=$(new_workdir)
 echo x > "$dir/file"
 rejected "deploy: rejects a path that is not a directory" "$dir" INNSTANCE_ACTION_MODE=deploy \
   INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_PATH=file
+mkdir "$dir/a" "$dir/b"
+rejected "deploy: rejects more than one directory" "$dir" INNSTANCE_ACTION_MODE=deploy \
+  INNSTANCE_ACTION_NAME=x "INNSTANCE_ACTION_PATH=$(printf 'a\nb\n')"
 rejected "deploy: rejects a relative remote-dir" "$dir" INNSTANCE_ACTION_MODE=deploy \
   INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_REMOTE_DIR=app
 rejected "deploy: rejects a port out of range" "$dir" INNSTANCE_ACTION_MODE=deploy \

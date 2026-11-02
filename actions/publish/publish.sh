@@ -7,7 +7,7 @@
 # The CLI does the work and keeps the rules: names, plan limits, what
 # publish accepts. This script only sequences commands, reads their --json
 # answers, and reports a URL a workflow can use.
-set -euo pipefail
+set -Eeuo pipefail
 
 action_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 cli=${INNSTANCE_CLI:-innstance}
@@ -173,7 +173,7 @@ attach_domain() {
 # report_records prints the DNS records a pending domain still needs, in the
 # job log and in the run summary, so whoever owns DNS can act on them.
 report_records() {
-  local file=$1 records
+  local file=$1 records record
   records=$(jq -r '
     [ (if (.records.cname.target // "") != "" then
          "\(if .records.cname.apex then "ALIAS" else "CNAME" end)  \(.records.cname.name)  \(.records.cname.target)"
@@ -182,7 +182,9 @@ report_records() {
     ] | .[]' "$file")
   warn "$domain is waiting for DNS. Create these records, then run this workflow again: $(tr '\n' ';' <<< "$records")"
   echo "Create these DNS records for $domain:"
-  printf '  %s\n' "$records"
+  while IFS= read -r record; do
+    echo "  $record"
+  done <<< "$records"
   summary "Custom domain $domain is waiting for DNS. Create these records, then run the workflow again:" \
     '' '```' "$records" '```'
 }
@@ -201,7 +203,7 @@ publish() {
       matches=()
       while IFS= read -r match; do
         matches+=("$match")
-      done < <(compgen -G "$entry" | LC_ALL=C sort)
+      done < <({ compgen -G "$entry" || true; } | LC_ALL=C sort)
       [[ ${#matches[@]} -gt 0 ]] || fail "path pattern matched nothing: $entry"
       files+=("${matches[@]}")
     else
@@ -209,6 +211,7 @@ publish() {
       files+=("$entry")
     fi
   done < <(lines "$paths_input")
+  [[ ${#files[@]} -gt 0 ]] || fail "path is required for mode: publish (files, globs or a folder, one per line)"
 
   # A folder goes to the CLI as it is: the CLI decides what static hosting
   # accepts, and says what to do instead when it does not.
@@ -225,7 +228,9 @@ publish() {
     warn "files stored at $url, but the page did not answer yet; it usually does within seconds"
   fi
   while IFS= read -r notice; do
-    [[ -n $notice ]] && warn "$notice"
+    if [[ -n $notice ]]; then
+      warn "$notice"
+    fi
   done < <(jq -r '.notices[]?, (.trial_note // empty)' "$work/publish.json")
 
   if [[ -n $domain ]]; then
@@ -237,9 +242,12 @@ publish() {
 
 deploy() {
   local path url code deadline entry pkg
-  local -a deploy_args=(deploy --json --yes --app "$name") packages=() words
-  path=$(lines "$paths_input" | head -n 1)
-  path=${path:-.}
+  local -a deploy_args=(deploy --json --yes --app "$name") packages=() words dirs=()
+  while IFS= read -r entry; do
+    dirs+=("$entry")
+  done < <(lines "$paths_input")
+  [[ ${#dirs[@]} -le 1 ]] || fail "mode: deploy pushes one directory; path lists ${#dirs[@]}"
+  path=${dirs[0]:-.}
   [[ -d $path ]] || fail "path must be a directory for mode: deploy: $path"
   [[ $remote_dir == /* ]] || fail "remote-dir must be an absolute path: $remote_dir"
   plain_value remote-dir "$remote_dir"
