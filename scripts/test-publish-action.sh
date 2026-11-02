@@ -472,6 +472,16 @@ else
   not_ok "deploy: keeps an existing impossible.toml, starts nothing unasked, attaches an app domain"
 fi
 
+dir=$(new_workdir)
+if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=trial \
+     FAKE_TRIAL_NOTE='This app is removed in 24 hours unless you upgrade' &&
+   grep -Fq 'This app is removed in 24 hours unless you upgrade' "$test_root/out" &&
+   grep -Fq 'This app is removed in 24 hours unless you upgrade' "$dir/summary"; then
+  ok "deploy: passes on the free trial's note, in the log and the summary"
+else
+  not_ok "deploy: passes on the free trial's note, in the log and the summary"
+fi
+
 # A domain attached before the edge: check exits 1 while / answers 404, or
 # while the certificate is pending, and the deploy itself still succeeded.
 dir=$(new_workdir)

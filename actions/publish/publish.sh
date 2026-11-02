@@ -83,6 +83,18 @@ plain_value() {
   [[ $value != -* ]] || fail "$label must not start with '-': $value"
   [[ $value != *[[:space:]]* ]] || fail "$label must be a single word: $value"
 }
+# pass_notices FILE repeats what a --json answer says beside its result,
+# such as the free plan's trial note. --json output prints these nowhere
+# else, and a trial that ends in a day is not something to find out later.
+pass_notices() {
+  local notice
+  while IFS= read -r notice; do
+    if [[ -n $notice ]]; then
+      warn "$notice"
+      summary "> $notice"
+    fi
+  done < <(jq -r '.notices[]?, (.trial_note // empty)' "$1")
+}
 
 case "$mode" in
   install)
@@ -235,11 +247,7 @@ publish() {
   else
     warn "files stored at $url, but the page did not answer yet; it usually does within seconds"
   fi
-  while IFS= read -r notice; do
-    if [[ -n $notice ]]; then
-      warn "$notice"
-    fi
-  done < <(jq -r '.notices[]?, (.trial_note // empty)' "$work/publish.json")
+  pass_notices "$work/publish.json"
 
   if [[ -n $domain ]]; then
     attach_domain site
@@ -319,6 +327,7 @@ deploy() {
   url=${url%/}
   https_url "$url" || fail "deploy returned no HTTPS URL"
   set_output url "$url"
+  pass_notices "$work/deploy.json"
 
   if [[ -n $start_command ]]; then
     # Stop what an earlier run started before the push replaces its files,

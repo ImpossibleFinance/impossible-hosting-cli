@@ -108,8 +108,9 @@ case "$1 ${2:-} ${3:-}" in
       echo "fake-innstance: impossible.toml would resize the app" >&2
       exit 1
     fi
-    printf '{"id":"dep1","url":"%s","status":"live","machines":1}\n' \
-      "${FAKE_APP_URL:-https://$(flag_value app "$@").innstance.app/}"
+    printf '{"id":"dep1","url":"%s","status":"live","machines":1%s}\n' \
+      "${FAKE_APP_URL:-https://$(flag_value app "$@").innstance.app/}" \
+      "${FAKE_TRIAL_NOTE:+,\"trial_note\":\"$FAKE_TRIAL_NOTE\"}"
     ;;
   "sites domains list"|"machines domains list")
     printf '{"domains":%s}\n' "${FAKE_DOMAINS:-[]}"
