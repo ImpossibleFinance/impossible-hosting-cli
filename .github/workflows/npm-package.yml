@@ -1,0 +1,73 @@
+name: npm-package
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'npm/**'
+      - '.github/workflows/npm-*.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'npm/**'
+      - '.github/workflows/npm-*.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: ['18', '20', '22', '24']
+        include:
+          - os: macos-latest
+            node: '22'
+          - os: windows-latest
+            node: '22'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: npm/innstance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Run the package tests against a fake control plane
+        run: npm test
+
+  contents:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: npm/innstance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: The pinned skill still matches what GitHub serves
+        run: node scripts/pin-skill.js --check
+      - name: The tarball holds only the entry point, the library and the README
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > "$RUNNER_TEMP/pack.json"
+          node -e '
+            // npm 10 and 11 print an array; npm 12 an object keyed by name.
+            const parsed = require(process.argv[1]);
+            const pack = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
+            const bad = pack.files.map((f) => f.path).filter((p) => !/^(bin|lib)\/[^/]+\.(js|json)$|^README\.md$|^package\.json$/.test(p));
+            if (bad.length) { console.error("unexpected files in the package:", bad); process.exit(1); }
+            console.log(pack.files.map((f) => f.path).join("\n"));
+          ' "$RUNNER_TEMP/pack.json"

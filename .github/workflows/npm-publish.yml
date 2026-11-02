@@ -1,0 +1,73 @@
+name: npm-publish
+
+# Publishes npm/innstance to npm with provenance, through npm trusted
+# publishing (OIDC): no npm token is stored anywhere in this repository.
+#
+# Nothing here runs until the npm side is configured. A pushed tag is skipped
+# unless the repository variable NPM_TRUSTED_PUBLISHING is "enabled", which is
+# set only after the package's trusted publisher has been registered on
+# npmjs.com for this repository, this workflow file and the "npm" environment
+# (see npm/innstance/RELEASING.md).
+#
+# Release: bump npm/innstance/package.json on main, then push the tag
+# npm-v<that version> pointing at a commit already on main.
+
+on:
+  push:
+    tags: ['npm-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: vars.NPM_TRUSTED_PUBLISHING == 'enabled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/innstance
+    permissions:
+      contents: read
+      id-token: write # the OIDC token npm exchanges for a one-time publish credential
+    defaults:
+      run:
+        working-directory: npm/innstance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Publish only commits that are already on main
+        working-directory: .
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main" >&2
+            exit 1
+          }
+      - name: The tag names the package version
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./package.json").version')
+          test "$GITHUB_REF_NAME" = "npm-v$version" || {
+            echo "tag $GITHUB_REF_NAME does not match package.json version $version" >&2
+            exit 1
+          }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - name: Use an npm with trusted publishing
+        run: npm install --global npm@11.21.1
+      - name: Run the package tests
+        run: npm test
+      - name: The pinned skill still matches what GitHub serves
+        run: node scripts/pin-skill.js --check
+      - name: Publish with provenance
+        run: npm publish --provenance --access public
