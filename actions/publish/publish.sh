@@ -240,9 +240,45 @@ publish() {
 
 # --- deploy --------------------------------------------------------------------
 
+# write_app_config gives deploy the impossible.toml it requires when the
+# repository has none. deploy applies the whole file to the app (size, port,
+# autostop), and an app this workflow points at may already run with
+# settings someone chose. So the file names only the app and its port, and
+# everything else stays as the app has it; a new app gets the platform's
+# defaults. The port cannot be left out, because deploy always sends one
+# (8080 when nothing names it): unless the port input sets it, an app that
+# exists keeps the port the platform reports for it.
+write_app_config() {
+  local app_port=$port
+  if [[ -z $app_port ]]; then
+    if "$cli" describe --json --app "$name" > "$work/describe.json" 2> "$work/describe.err"; then
+      app_port=$(jq -r '.app.internal_port // empty' "$work/describe.json" 2>/dev/null || true)
+      [[ $app_port =~ ^[0-9]+$ && $app_port -ge 1 && $app_port -le 65535 ]] ||
+        fail "app $name exists, but its port could not be read. Set port, or commit an impossible.toml"
+      echo "App $name exists; keeping its port $app_port and its size."
+    elif grep -Fq "describe app \"$name\": API error (404)" "$work/describe.err"; then
+      # The CLI's answer for an app that does not exist. Any other failure,
+      # including a change to this wording, stops below rather than guess.
+      echo "App $name does not exist yet; deploy creates it with the platform's defaults."
+    else
+      cat "$work/describe.err" >&2
+      fail "could not tell whether app $name already exists, so its port is unknown. Set port, or commit an impossible.toml"
+    fi
+  fi
+  {
+    printf 'app = "%s"\n' "$name"
+    if [[ -n $app_port ]]; then
+      printf '\n[service]\ninternal_port = %s\n' "$app_port"
+    fi
+  } > impossible.toml
+}
+
 deploy() {
   local path url code deadline entry pkg
   local -a deploy_args=(deploy --json --yes --app "$name") packages=() words dirs=()
+  # App names are lowercase letters, digits and hyphens; checking that here
+  # also keeps the name inert inside the impossible.toml written below.
+  [[ $name =~ ^[a-z0-9-]+$ ]] || fail "name must be lowercase letters, digits and hyphens for mode: deploy: $name"
   while IFS= read -r entry; do
     dirs+=("$entry")
   done < <(lines "$paths_input")
@@ -267,12 +303,8 @@ deploy() {
     done
   done < <(lines "$packages_input")
 
-  # deploy needs an impossible.toml. A repository without one gets the
-  # CLI's own defaults for this name, the same as running init by hand.
   if [[ ! -f impossible.toml ]]; then
-    local -a init_args=(init --app "$name")
-    [[ -z $port ]] || init_args+=(--port "$port")
-    "$cli" "${init_args[@]}" || fail "init failed"
+    write_app_config
   fi
   "$cli" "${deploy_args[@]}" > "$work/deploy.json" || fail "deploy failed; the CLI's explanation is above"
   url=$(jq -r '.url // empty' "$work/deploy.json")

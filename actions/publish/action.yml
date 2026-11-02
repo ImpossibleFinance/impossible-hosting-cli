@@ -51,8 +51,8 @@ inputs:
     default: /app
   port:
     description: >-
-      deploy: port the app listens on. Overrides impossible.toml; used to
-      create impossible.toml when the repository has none.
+      deploy: port the app listens on. Overrides impossible.toml. Without
+      either, an app that exists keeps its port and a new app gets 8080.
     required: false
     default: ''
   packages:

@@ -395,22 +395,63 @@ CLI_CALLED=1 rejected "publish: fails when the CLI refuses" "$dir" INNSTANCE_ACT
   INNSTANCE_ACTION_PATH=index.html FAKE_FAIL=publish
 if [[ -s $dir/output ]]; then not_ok "a refused publish sets no outputs"; fi
 
+# expect_toml DIR CONTENT passes when the action wrote exactly this config.
+expect_toml() {
+  diff <(printf '%s\n' "$2") "$1/impossible.toml" > /dev/null
+}
+
 dir=$(new_workdir)
 echo 'require("http")' > "$dir/server.js"
 if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=api \
      INNSTANCE_ACTION_PORT=3000 INNSTANCE_ACTION_PACKAGES="$(printf 'nodejs  npm\nca-certificates\n')" \
      INNSTANCE_ACTION_START_COMMAND='node server.js' INNSTANCE_ACTION_WAIT_SECONDS=0 &&
    expect_log "$dir" \
-     'init --app api --port 3000' \
      'deploy --json --yes --app api --port 3000' \
      'machines exec --app api -- sh -c <remote-stop.sh> innstance-action' \
      'machines install --app api -- nodejs npm ca-certificates' \
      'machines push --app api --to /app --yes-replace -- .' \
      "machines exec --app api -- sh -c <remote-start.sh> innstance-action /app node\\ server.js" &&
+   expect_toml "$dir" "$(printf 'app = "api"\n\n[service]\ninternal_port = 3000\n')" &&
    has_output "$dir" url=https://api.innstance.app; then
-  ok "deploy: creates impossible.toml, stops the last run's process, pushes, then starts"
+  ok "deploy: names only the app and the given port, stops the last run's process, pushes, then starts"
 else
-  not_ok "deploy: creates impossible.toml, stops the last run's process, pushes, then starts"
+  not_ok "deploy: names only the app and the given port, stops the last run's process, pushes, then starts"
+fi
+
+# An app that already runs, at 4 GB on port 5000, with no impossible.toml in
+# the repository: the deploy must leave both alone.
+dir=$(new_workdir)
+if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=running FAKE_APP_PORT=5000 &&
+   expect_log "$dir" \
+     'describe --json --app running' \
+     'deploy --json --yes --app running' \
+     'machines push --app running --to /app --yes-replace -- .' &&
+   expect_toml "$dir" "$(printf 'app = "running"\n\n[service]\ninternal_port = 5000\n')"; then
+  ok "deploy: keeps the port and size of an app that already exists"
+else
+  not_ok "deploy: keeps the port and size of an app that already exists"
+fi
+
+dir=$(new_workdir)
+if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=fresh &&
+   expect_log "$dir" \
+     'describe --json --app fresh' \
+     'deploy --json --yes --app fresh' \
+     'machines push --app fresh --to /app --yes-replace -- .' &&
+   expect_toml "$dir" "$(printf 'app = "fresh"\n')"; then
+  ok "deploy: leaves a new app to the platform's defaults"
+else
+  not_ok "deploy: leaves a new app to the platform's defaults"
+fi
+
+dir=$(new_workdir)
+CLI_CALLED=1 rejected "deploy: stops when it cannot tell whether the app exists" "$dir" \
+  INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=unsure FAKE_DESCRIBE_FAIL=1
+if expect_log "$dir" 'describe --json --app unsure' && [[ ! -e $dir/impossible.toml ]] &&
+   grep -Fq 'Set port, or commit an impossible.toml' "$test_root/out"; then
+  ok "deploy: an unknown app state deploys nothing and says how to proceed"
+else
+  not_ok "deploy: an unknown app state deploys nothing and says how to proceed"
 fi
 
 dir=$(new_workdir)
@@ -464,6 +505,8 @@ rejected "deploy: rejects a package that reads as a flag" "$dir" INNSTANCE_ACTIO
   INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_PACKAGES='nodejs --allow-unauthenticated'
 rejected "deploy: rejects a health-path without a leading slash" "$dir" INNSTANCE_ACTION_MODE=deploy \
   INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_HEALTH_PATH=health
+rejected "deploy: rejects an app name that is not one" "$dir" INNSTANCE_ACTION_MODE=deploy \
+  'INNSTANCE_ACTION_NAME=My"App'
 
 # --- remote scripts on a Linux VM's /proc -----------------------------------
 

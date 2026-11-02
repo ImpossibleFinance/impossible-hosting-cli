@@ -68,11 +68,30 @@ case "$1 ${2:-} ${3:-}" in
     printf '{"url":"https://%s.innstance.app","live":%s,"file_count":1,"size_bytes":10,"merged":false,"notices":[%s]}\n' \
       "$name" "${FAKE_PUBLISH_LIVE:-true}" "${FAKE_PUBLISH_NOTICE:+\"$FAKE_PUBLISH_NOTICE\"}"
     ;;
-  "init "*)
-    printf 'app = "%s"\n' "$(flag_value app "$@")" > impossible.toml
+  "describe "*)
+    # FAKE_APP_PORT: the app exists on that port. FAKE_DESCRIBE_FAIL: the
+    # lookup fails for another reason. Otherwise the app does not exist, in
+    # the words the real CLI uses.
+    app=$(flag_value app "$@")
+    if [[ -n ${FAKE_APP_PORT:-} ]]; then
+      printf '{"app":{"name":"%s","internal_port":%s,"cpu_kind":"performance","cpus":2,"memory_mb":4096}}\n' \
+        "$app" "$FAKE_APP_PORT"
+    elif [[ -n ${FAKE_DESCRIBE_FAIL:-} ]]; then
+      printf 'Error: describe logs for app "%s": log read returned HTTP 502\n' "$app" >&2
+      exit 1
+    else
+      printf 'Error: describe app "%s": API error (404): app not found\n' "$app" >&2
+      exit 1
+    fi
     ;;
   "deploy "*)
     test -f impossible.toml || { echo "fake-innstance: no impossible.toml" >&2; exit 1; }
+    # The real deploy sends [resources] to an app that already exists and
+    # resizes it, so a file the test did not write must never carry them.
+    if grep -q '^\[resources\]' impossible.toml && [[ ${FAKE_ALLOW_RESOURCES:-0} != 1 ]]; then
+      echo "fake-innstance: impossible.toml would resize the app" >&2
+      exit 1
+    fi
     printf '{"id":"dep1","url":"%s","status":"live","machines":1}\n' \
       "${FAKE_APP_URL:-https://$(flag_value app "$@").innstance.app/}"
     ;;

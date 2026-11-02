@@ -102,9 +102,12 @@ made of several files (HTML plus CSS, JavaScript and assets) needs
 
 The action runs these steps, in this order:
 
-1. `innstance init --app <name>` if the working directory has no
-   `impossible.toml`. With one, its settings apply, and `name` and `port`
-   override them.
+1. If the working directory has no `impossible.toml`, it writes one that
+   names only the app and its port. An app that already exists keeps its
+   size, and keeps its port unless `port` sets one; a new app gets the
+   platform's defaults, on port 8080 unless `port` sets one. With an
+   `impossible.toml`, every setting in it applies to the app (size, port,
+   autostop, environment, volumes), and `name` and `port` override it.
 2. `innstance deploy`, which creates the app or reuses its runner VM.
 3. It stops the process that an earlier run of this action started. It finds
    that process by a marker in its environment, not by a pid file.
