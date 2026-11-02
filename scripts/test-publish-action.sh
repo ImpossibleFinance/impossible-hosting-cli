@@ -144,7 +144,7 @@ run_install() {
   GITHUB_ACTIONS=${IN_ACTIONS:-} GITHUB_OUTPUT=$dir.output GITHUB_PATH=$dir.path GITHUB_ENV=$dir.env \
     INNSTANCE_ACTION_ALLOW_HTTP=${ALLOW_HTTP:-1} \
     bash "$action/install-cli.sh" "${ORIGIN:-$origin}" "${SIGNERS:-$test_root/release-signers}" \
-    "${CHANNEL_STATE:-$repo_root/channel-state.json}" "$dir" "$@"
+    "${CHANNEL_STATE:-$test_root/floor-state.json}" "$dir" "$@"
 }
 # refused NAME INSTALL_DIR [ARGS...] passes when the install fails and
 # leaves nothing behind.
@@ -162,6 +162,12 @@ refused() {
 
 commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 build=20261101-000000-$commit
+# The installer's rollback floor for these fixtures: older than every build
+# they publish, and independent of the repository's channel-state.json,
+# which moves forward with each real release (the live-install job checks
+# that file against the live channel).
+printf '{\n  "schema": 1,\n  "build_id": "20260901-000000",\n  "source_commit": "%s",\n  "release_sha256": "%064d"\n}\n' \
+  "$commit" 0 > "$test_root/floor-state.json"
 for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
   make_archive "innstance_$target.tar.gz" innstance
   make_archive "ifhost_$target.tar.gz" ifhost
