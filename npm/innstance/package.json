@@ -1,0 +1,27 @@
+{
+  "name": "innstance",
+  "version": "0.1.0",
+  "description": "Sign in to Innstance and connect your coding agent (Claude Code, Codex, Cursor, OpenCode) with nothing native to install.",
+  "license": "UNLICENSED",
+  "homepage": "https://innstance.impossibuild.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ImpossibleFinance/impossible-hosting-cli.git",
+    "directory": "npm/innstance"
+  },
+  "bin": {
+    "innstance": "bin/innstance.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "pin-skill": "node scripts/pin-skill.js"
+  }
+}
