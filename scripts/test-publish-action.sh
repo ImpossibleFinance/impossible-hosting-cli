@@ -233,8 +233,300 @@ else
 fi
 publish_release "$build" "$commit" "innstance ifhost"
 
+# --- publish.sh -----------------------------------------------------------------
+
+token=test-token-0123456789
+# run_action WORKDIR [VAR=VALUE...] runs publish.sh as the action's second
+# step: inside the working directory, inputs as environment variables.
+run_action() {
+  local dir=$1
+  shift
+  : > "$dir/log"
+  (
+    cd "$dir"
+    env GITHUB_OUTPUT="$dir/output" GITHUB_STEP_SUMMARY="$dir/summary" \
+      INNSTANCE_CLI="$cli_dir/innstance" FAKE_LOG="$dir/log" \
+      FAKE_STOP_SCRIPT="$action/remote-stop.sh" FAKE_START_SCRIPT="$action/remote-start.sh" \
+      IMPOSSIBLE_API_TOKEN="$token" "$@" bash "$action/publish.sh"
+  ) > "$test_root/out" 2>&1
+}
+new_workdir() {
+  local dir
+  dir=$(mktemp -d "$test_root/work.XXXXXX")
+  : > "$dir/output"
+  : > "$dir/summary"
+  printf '%s' "$dir"
+}
+# expect_log DIR LINE... passes when the CLI saw exactly these calls.
+expect_log() {
+  local dir=$1
+  shift
+  diff <(printf '%s\n' "$@") "$dir/log" > /dev/null
+}
+has_output() { grep -Fxq "$2" "$1/output"; }
+
+dir=$(new_workdir)
+echo '<h1>hi</h1>' > "$dir/index.html"
+if run_action "$dir" INNSTANCE_ACTION_NAME=demo INNSTANCE_ACTION_PATH=index.html \
+     INNSTANCE_ACTION_DOMAIN=www.example.com &&
+   expect_log "$dir" \
+     'publish --json --name demo -- index.html' \
+     'sites domains list --json demo' \
+     'sites domains add --json demo www.example.com' &&
+   has_output "$dir" url=https://demo.innstance.app &&
+   has_output "$dir" domain-url=https://www.example.com &&
+   has_output "$dir" domain-status=pending_verification &&
+   grep -Fq 'TXT  _innstance.www.example.com  proof-123' "$dir/summary" &&
+   grep -Fq 'CNAME  www.example.com  innstance.app' "$dir/summary"; then
+  ok "publish: first run with a domain reports the DNS records to create"
+else
+  not_ok "publish: first run with a domain reports the DNS records to create"
+fi
+if ! grep -Fq "$token" "$test_root/out" "$dir/summary" "$dir/output"; then
+  ok "publish: the token never reaches the log, outputs or summary"
+else
+  not_ok "publish: the token never reaches the log, outputs or summary"
+fi
+
+dir=$(new_workdir)
+mkdir "$dir/shots"
+touch "$dir/shots/b.png" "$dir/shots/a.png" "$dir/cover.pdf"
+if run_action "$dir" INNSTANCE_ACTION_NAME=gallery \
+     INNSTANCE_ACTION_PATH="$(printf '  cover.pdf\n\nshots/*.png  \n')" \
+     INNSTANCE_ACTION_DOMAIN=gallery.example.com \
+     FAKE_DOMAINS='[{"hostname":"gallery.example.com","is_custom":true}]' \
+     FAKE_DOMAIN_CONFIGURED=true &&
+   expect_log "$dir" \
+     'publish --json --name gallery -- cover.pdf shots/a.png shots/b.png' \
+     'sites domains list --json gallery' \
+     'sites domains check --json gallery gallery.example.com' &&
+   has_output "$dir" domain-status=active; then
+  ok "publish: keeps listed order, sorts globs, and only checks a domain already attached"
+else
+  not_ok "publish: keeps listed order, sorts globs, and only checks a domain already attached"
+fi
+
+dir=$(new_workdir)
+mkdir "$dir/site"
+if run_action "$dir" INNSTANCE_ACTION_NAME=folder INNSTANCE_ACTION_PATH=site \
+     INNSTANCE_ACTION_DOMAIN=folder.example.com FAKE_DOMAIN_VERIFIED=1 &&
+   expect_log "$dir" \
+     'publish --json --name folder -- site' \
+     'sites domains list --json folder' \
+     'sites domains add --json folder folder.example.com' \
+     'sites domains check --json folder folder.example.com' &&
+   has_output "$dir" domain-status=pending_certificate; then
+  ok "publish: hands a folder to the CLI as it is; a verified domain waits for its certificate"
+else
+  not_ok "publish: hands a folder to the CLI as it is; a verified domain waits for its certificate"
+fi
+
+dir=$(new_workdir)
+echo x > "$dir/index.html"
+if run_action "$dir" INNSTANCE_ACTION_NAME=late INNSTANCE_ACTION_PATH=index.html \
+     FAKE_PUBLISH_LIVE=false FAKE_PUBLISH_NOTICE='page.pdf could not be shown inline' &&
+   has_output "$dir" url=https://late.innstance.app &&
+   grep -Fq 'did not answer yet' "$test_root/out" &&
+   grep -Fq 'page.pdf could not be shown inline' "$test_root/out"; then
+  ok "publish: passes on the CLI's notices and a page that is not answering yet"
+else
+  not_ok "publish: passes on the CLI's notices and a page that is not answering yet"
+fi
+
+dir=$(new_workdir)
+if run_action "$dir" INNSTANCE_ACTION_MODE=install IMPOSSIBLE_API_TOKEN= &&
+   [[ ! -s $dir/log ]]; then
+  ok "install: needs no token and calls nothing"
+else
+  not_ok "install: needs no token and calls nothing"
+fi
+
+# rejected NAME DIR [VAR=VALUE...] passes when publish.sh fails before the
+# CLI is called, or (with CLI_CALLED=1) after it is.
+rejected() {
+  local name=$1 dir=$2
+  shift 2
+  if run_action "$dir" "$@"; then
+    not_ok "$name (succeeded)"
+  elif [[ ${CLI_CALLED:-0} == 0 && -s $dir/log ]]; then
+    not_ok "$name (called the CLI)"
+  else
+    ok "$name"
+  fi
+}
+dir=$(new_workdir)
+echo x > "$dir/index.html"
+rejected "rejects an unknown mode" "$dir" INNSTANCE_ACTION_MODE=ship INNSTANCE_ACTION_NAME=x
+rejected "rejects a missing token, naming the fork case" "$dir" IMPOSSIBLE_API_TOKEN= \
+  INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_PATH=index.html
+grep -Fq 'forks' "$test_root/out" || not_ok "the missing-token error mentions forks"
+rejected "rejects a missing name" "$dir" INNSTANCE_ACTION_PATH=index.html
+rejected "rejects a name that reads as a flag" "$dir" INNSTANCE_ACTION_NAME=--yes \
+  INNSTANCE_ACTION_PATH=index.html
+rejected "rejects a domain with spaces" "$dir" INNSTANCE_ACTION_NAME=x \
+  INNSTANCE_ACTION_PATH=index.html "INNSTANCE_ACTION_DOMAIN=a.com b.com"
+rejected "publish: rejects a missing path" "$dir" INNSTANCE_ACTION_NAME=x
+rejected "publish: rejects a path that does not exist" "$dir" INNSTANCE_ACTION_NAME=x \
+  INNSTANCE_ACTION_PATH=missing.html
+rejected "publish: rejects a glob that matches nothing" "$dir" INNSTANCE_ACTION_NAME=x \
+  'INNSTANCE_ACTION_PATH=*.pdf'
+rejected "publish: rejects a start-command" "$dir" INNSTANCE_ACTION_NAME=x \
+  INNSTANCE_ACTION_PATH=index.html INNSTANCE_ACTION_START_COMMAND='node s.js'
+CLI_CALLED=1 rejected "publish: fails when the CLI refuses" "$dir" INNSTANCE_ACTION_NAME=x \
+  INNSTANCE_ACTION_PATH=index.html FAKE_FAIL=publish
+if [[ -s $dir/output ]]; then not_ok "a refused publish sets no outputs"; fi
+
+dir=$(new_workdir)
+echo 'require("http")' > "$dir/server.js"
+if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=api \
+     INNSTANCE_ACTION_PORT=3000 INNSTANCE_ACTION_PACKAGES="$(printf 'nodejs  npm\nca-certificates\n')" \
+     INNSTANCE_ACTION_START_COMMAND='node server.js' INNSTANCE_ACTION_WAIT_SECONDS=0 &&
+   expect_log "$dir" \
+     'init --app api --port 3000' \
+     'deploy --json --yes --app api --port 3000' \
+     'machines exec --app api -- sh -c <remote-stop.sh> innstance-action' \
+     'machines install --app api -- nodejs npm ca-certificates' \
+     'machines push --app api --to /app --yes-replace -- .' \
+     "machines exec --app api -- sh -c <remote-start.sh> innstance-action /app node\\ server.js" &&
+   has_output "$dir" url=https://api.innstance.app; then
+  ok "deploy: creates impossible.toml, stops the last run's process, pushes, then starts"
+else
+  not_ok "deploy: creates impossible.toml, stops the last run's process, pushes, then starts"
+fi
+
+dir=$(new_workdir)
+mkdir "$dir/dist"
+echo 'app = "web"' > "$dir/impossible.toml"
+if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=web \
+     INNSTANCE_ACTION_PATH=dist INNSTANCE_ACTION_REMOTE_DIR=/data/web \
+     INNSTANCE_ACTION_DOMAIN=api.example.com \
+     FAKE_DOMAINS='[{"hostname":"api.example.com","is_custom":true}]' FAKE_DOMAIN_CONFIGURED=true &&
+   expect_log "$dir" \
+     'deploy --json --yes --app web' \
+     'machines push --app web --to /data/web --yes-replace -- dist' \
+     'machines domains list --json --app web' \
+     'machines domains check --json --app web api.example.com' &&
+   has_output "$dir" domain-status=active; then
+  ok "deploy: keeps an existing impossible.toml, starts nothing unasked, attaches an app domain"
+else
+  not_ok "deploy: keeps an existing impossible.toml, starts nothing unasked, attaches an app domain"
+fi
+
+dir=$(new_workdir)
+if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=probe \
+     INNSTANCE_ACTION_START_COMMAND='./serve' INNSTANCE_ACTION_ALLOW_HTTP=1 \
+     FAKE_APP_URL="$origin" INNSTANCE_ACTION_HEALTH_PATH=/dl/release.txt &&
+   has_output "$dir" "url=$origin"; then
+  ok "deploy: succeeds once health-path answers"
+else
+  not_ok "deploy: succeeds once health-path answers"
+fi
+
+dir=$(new_workdir)
+CLI_CALLED=1 rejected "deploy: fails with the app log when health-path never answers" "$dir" \
+  INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=probe INNSTANCE_ACTION_START_COMMAND='./serve' \
+  INNSTANCE_ACTION_ALLOW_HTTP=1 FAKE_APP_URL="$origin" INNSTANCE_ACTION_HEALTH_PATH=/missing \
+  INNSTANCE_ACTION_WAIT_SECONDS=1
+grep -Fxq 'machines exec --app probe -- tail -n 50 /tmp/innstance-action.log' "$dir/log" ||
+  not_ok "a failed health check fetches the app log"
+
+dir=$(new_workdir)
+echo x > "$dir/file"
+rejected "deploy: rejects a path that is not a directory" "$dir" INNSTANCE_ACTION_MODE=deploy \
+  INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_PATH=file
+rejected "deploy: rejects a relative remote-dir" "$dir" INNSTANCE_ACTION_MODE=deploy \
+  INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_REMOTE_DIR=app
+rejected "deploy: rejects a port out of range" "$dir" INNSTANCE_ACTION_MODE=deploy \
+  INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_PORT=70000
+rejected "deploy: rejects a package that reads as a flag" "$dir" INNSTANCE_ACTION_MODE=deploy \
+  INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_PACKAGES='nodejs --allow-unauthenticated'
+rejected "deploy: rejects a health-path without a leading slash" "$dir" INNSTANCE_ACTION_MODE=deploy \
+  INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_HEALTH_PATH=health
+
+# --- remote scripts on a Linux VM's /proc -----------------------------------
+
+if [[ -d /proc/self && -r /proc/self/environ ]] && command -v setsid >/dev/null 2>&1; then
+  remote=$test_root/remote
+  mkdir -p "$remote"
+  # alive PID: running, as opposed to gone or exited and not yet reaped.
+  alive() {
+    [[ -d /proc/$1 ]] && ! grep -q '^State:[[:space:]]*Z' "/proc/$1/status" 2>/dev/null
+  }
+  # An unmarked process with the same command line must survive the stop.
+  sleep 300 &
+  bystander=$!
+  sh -c "$(cat "$action/remote-start.sh")" innstance-action "$remote" \
+    'echo "started with a b in $(pwd)"; exec sleep 300' > "$test_root/out" 2>&1
+  marked=
+  for _ in $(seq 1 50); do
+    for d in /proc/[0-9]*; do
+      if tr '\000' '\n' < "$d/environ" 2>/dev/null | grep -qx INNSTANCE_ACTION_SERVICE=1; then
+        marked=${d#/proc/}
+      fi
+    done
+    [[ -n $marked ]] && grep -Fq "started with a b in $remote" /tmp/innstance-action.log && break
+    sleep 0.1
+  done
+  if [[ -n $marked ]] && grep -Fq "started with a b in $remote" /tmp/innstance-action.log; then
+    ok "remote-start: runs the start command detached and marked, in remote-dir"
+  else
+    not_ok "remote-start: runs the start command detached and marked, in remote-dir"
+  fi
+  sh -c "$(cat "$action/remote-stop.sh")" innstance-action > "$test_root/out" 2>&1
+  if [[ -n $marked ]] && ! alive "$marked" && alive "$bystander"; then
+    ok "remote-stop: stops the marked process and nothing else"
+  else
+    not_ok "remote-stop: stops the marked process and nothing else"
+  fi
+  kill "$bystander" 2>/dev/null || true
+  if sh -c "$(cat "$action/remote-stop.sh")" innstance-action > "$test_root/out" 2>&1 &&
+     grep -Fq 'no running process' "$test_root/out"; then
+    ok "remote-stop: is a no-op on a first deploy"
+  else
+    not_ok "remote-stop: is a no-op on a first deploy"
+  fi
+else
+  echo "skip - remote scripts need a Linux /proc and setsid (the VM side); CI runs them on Linux"
+fi
+
+# --- action.yml ------------------------------------------------------------------
+
+# Expressions may set env and outputs, never appear inside run, so an input
+# can never be read as shell. Every step runs one of the scripts above.
+# shellcheck disable=SC2016 # The patterns match literal ${{ and $GITHUB_ACTION_PATH.
+if grep -E '^[[:space:]]*run:' "$action/action.yml" | grep -Fq '${{'; then
+  not_ok "action.yml keeps expressions out of run"
+else
+  ok "action.yml keeps expressions out of run"
+fi
+# shellcheck disable=SC2016
+if grep -E '^[[:space:]]*run:' "$action/action.yml" | grep -Evq '^[[:space:]]*run: bash "\$GITHUB_ACTION_PATH/[a-z-]+\.sh"'; then
+  not_ok "action.yml runs only its own scripts, one line each"
+else
+  ok "action.yml runs only its own scripts, one line each"
+fi
+# Third-party actions are pinned to a full commit, in the action and in CI.
+unpinned=$(grep -hE '^[[:space:]]*-?[[:space:]]*uses:' "$action/action.yml" "$repo_root"/.github/workflows/*.yml |
+  grep -Ev 'uses: \./|uses: [^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$)' || true)
+if [[ -z $unpinned ]]; then
+  ok "every third-party action is pinned to a commit"
+else
+  printf '%s\n' "$unpinned" > "$test_root/out"
+  not_ok "every third-party action is pinned to a commit"
+fi
+# Every input the scripts read is declared, and every declared input reaches them.
+declared=$(awk '/^inputs:/ { on = 1; next } /^[a-z]/ { on = 0 } on && /^  [a-z-]+:$/ { sub(/:$/, ""); sub(/^  /, ""); print }' \
+  "$action/action.yml" | sort)
+wired=$(grep -oE '\$\{\{ inputs\.[a-z-]+ \}\}' "$action/action.yml" | sed -E 's/.*inputs\.([a-z-]+).*/\1/' | sort -u)
+if [[ $declared == "$wired" ]]; then
+  ok "every declared input is wired to a script"
+else
+  diff <(printf '%s\n' "$declared") <(printf '%s\n' "$wired") > "$test_root/out" || true
+  not_ok "every declared input is wired to a script"
+fi
+
 if [[ $failures -gt 0 ]]; then
   echo "$failures check(s) failed" >&2
   exit 1
 fi
-echo "verified the publish action's installer against a signed fixture channel"
+echo "verified the publish action's installer, publish and deploy flows, and its policy"
