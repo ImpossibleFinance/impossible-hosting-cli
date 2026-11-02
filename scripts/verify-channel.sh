@@ -295,6 +295,13 @@ if previous_build_commit is not None and previous_build_commit != previous["sour
 if stamp < previous_stamp:
     fail("release rollback detected: build timestamp is older than the accepted state")
 if stamp == previous_stamp:
+    # A build ID repeats when the same commit is deployed again, and, once
+    # the CLI is built from the newest commit that changed it, whenever a
+    # server deploy leaves the CLI alone. Either way the deploy must
+    # republish the same release: one identity names one exact signed
+    # record, and any change under it is equivocation, however harmless the
+    # reason (a rebuilt archive with a new timestamp inside, or a deploy
+    # commit written into source_commit).
     if build_id != previous["build_id"]:
         fail("non-monotonic release identity: the timestamp was reused")
     if source_commit != previous["source_commit"] or release_sha256 != previous["release_sha256"]:

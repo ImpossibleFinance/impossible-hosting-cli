@@ -359,12 +359,42 @@ accept "the accepted release, observed again" \
 same_state "$test_root/legacy-state.json" "$test_root/legacy-again-state.json"
 grep -Fq "verified server-signed CLI channel 20260903-010203 (12 archives)" "$test_root/verifier.out"
 
+# Once the CLI is built from the newest commit that changed it, a server
+# deploy that leaves the CLI alone keeps its build ID. Rebuilding
+# reproducible archives and republishing then yields the same signed record,
+# which passes without moving the state.
+build_archives 0
+publish "20260903-010203" "$legacy_source"
+accept "a server deploy that republishes the same release" \
+  "$test_root/legacy-state.json" "$test_root/redeploy-state.json"
+same_state "$test_root/legacy-state.json" "$test_root/redeploy-state.json"
+
+# The same identity naming the deploy's own commit is a different release.
+deploy_source=9999999999999999999999999999999999999999
+publish "20260903-010203" "$deploy_source"
+reject "a repeated build ID naming another source commit" \
+  "release snapshot changed without a new release identity" "$test_root/legacy-state.json"
+
+# So is a rebuild whose archives record the time they were packed.
+build_archives 1791792564
+publish "20260903-010203" "$legacy_source"
+reject "a repeated build ID over rebuilt archives" \
+  "release snapshot changed without a new release identity" "$test_root/legacy-state.json"
+build_archives 0
+
 # A newer signed timestamp-only release remains valid during the publisher
 # transition, before the channel records its first commit-bound identity.
 legacy_advance_source=cccccccccccccccccccccccccccccccccccccccc
 publish "20260903-020304" "$legacy_advance_source"
 accept "a newer timestamp-only release" \
   "$test_root/legacy-state.json" "$test_root/legacy-advanced-state.json"
+
+# A release built from a commit older than the accepted build reads as a
+# rollback, even when it is the newest commit that touched the CLI.
+older_cli_source=2222222222222222222222222222222222222222
+publish "20260903-015959" "$older_cli_source"
+reject "a build ID older than the accepted one" \
+  "release rollback detected" "$test_root/legacy-advanced-state.json"
 
 current_source=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 publish "20260904-010203-$current_source" "$current_source"
@@ -476,4 +506,4 @@ publish "$next_build" "$next_source"
 accept "the well-formed next release" "$test_root/accepted-state.json" "$test_root/next-state.json"
 test "$(jq -r .build_id "$test_root/next-state.json")" = "$next_build"
 
-echo "verified the twelve-archive channel fixture, source binding, and rollback rejection"
+echo "verified the twelve-archive channel fixture, repeated identities, source binding, and rollback rejection"
