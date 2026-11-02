@@ -10,6 +10,7 @@ const { version } = require('../package.json');
 //
 //   ok       the endpoint initialized (serverInfo is reported)
 //   auth     the endpoint is live but refused the token (or none was sent)
+//   forbidden  the token is valid but not allowed to use MCP (HTTP 403)
 //   missing  the control plane has no /mcp yet (404)
 //   error    anything else: an outage, an unexpected answer
 //
@@ -82,8 +83,14 @@ async function probeMCP(mcpURL, token, { timeoutMs = 15000 } = {}) {
   }
   const isSSE = streamed(res.headers);
   if (res.status === 404) return { state: 'missing', detail: `${mcpURL} is not available on this server yet` };
-  if (res.status === 401 || res.status === 403) {
+  if (res.status === 401 || (res.status === 403 && !token)) {
     return { state: 'auth', detail: token ? 'the MCP endpoint refused this token' : 'the MCP endpoint is live and needs a token' };
+  }
+  if (res.status === 403) {
+    // The token was accepted as a sign-in but may not use MCP (a server that
+    // asks for a scoped or newer kind of token). Signing in again the same
+    // way would not change that, so this is told apart from a refusal.
+    return { state: 'forbidden', detail: 'the MCP endpoint does not allow this session to use MCP' };
   }
   if (res.status !== 200) return { state: 'error', detail: `the MCP endpoint answered HTTP ${res.status}` };
 

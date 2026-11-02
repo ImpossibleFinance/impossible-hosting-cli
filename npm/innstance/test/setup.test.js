@@ -126,8 +126,8 @@ test('--relogin replaces the session and refreshes every connected agent', async
   assert.equal(await main([], first.ctx), 0, first.text());
   const before = loadSession(first.ctx);
 
-  // Sign in again but name only Cursor: Claude Code and Codex still point at
-  // this endpoint, so they must get the new token too.
+  // Sign in again but name only Cursor: the claude and codex agents still
+  // point at this endpoint, so they must get the new token too.
   const again = makeContext(home, server);
   assert.equal(await main(['--relogin', '--agents', 'cursor'], again.ctx), 0, again.text());
   const after = loadSession(again.ctx);
@@ -136,7 +136,78 @@ test('--relogin replaces the session and refreshes every connected agent', async
   assert.equal(server.validToken(before.token), false, 'the server replaced the old session');
   const tokens = tokensIn(home);
   for (const id of ['claude', 'codex', 'cursor']) assert.equal(tokens[id], after.token, id);
-  assert.match(again.out.join('\n'), /refreshed with the current session/);
+  assert.match(again.out.join('\n'), /Codex: gave the new session to the "innstance" MCP server/);
+});
+
+test('a refresh changes only the url and token, keeping what the person set', async (t) => {
+  const server = await startFakeServer();
+  t.after(server.close);
+  const home = tempHome(t);
+  const p = configPaths(home);
+  const first = makeContext(home, server, { agents: ['claude', 'codex', 'opencode'] });
+  assert.equal(await main([], first.ctx), 0, first.text());
+
+  // The person turns the server off in OpenCode and Codex, and tunes Codex.
+  const opencode = jsonc.setAt(jsonc.setAt(fs.readFileSync(p.opencode, 'utf8'), ['mcp', 'innstance', 'enabled'], false), ['mcp', 'innstance', 'timeout'], 30000);
+  fs.writeFileSync(p.opencode, opencode);
+  const custom = 'enabled = false\ndisabled_tools = ["delete_app"]\ntool_timeout_sec = 300\n\n[mcp_servers.innstance.tools.deploy]\napproval_mode = "prompt"\n';
+  fs.writeFileSync(p.codex, fs.readFileSync(p.codex, 'utf8') + custom);
+
+  // Naming only claude with the saved session touches nothing else.
+  const reused = makeContext(home, server);
+  assert.equal(await main(['--agents', 'claude'], reused.ctx), 0, reused.text());
+  assert.equal(fs.readFileSync(p.opencode, 'utf8'), opencode);
+  assert.ok(fs.readFileSync(p.codex, 'utf8').endsWith(custom));
+
+  // A new sign-in refreshes them, and only their url and token change.
+  const again = makeContext(home, server);
+  assert.equal(await main(['--relogin', '--agents', 'claude'], again.ctx), 0, again.text());
+  const token = loadSession(again.ctx).token;
+  const entry = jsonc.parse(fs.readFileSync(p.opencode, 'utf8')).mcp.innstance;
+  assert.equal(entry.enabled, false, 'OpenCode stays disabled');
+  assert.equal(entry.timeout, 30000);
+  assert.equal(entry.headers.Authorization, `Bearer ${token}`);
+  const codex = fs.readFileSync(p.codex, 'utf8');
+  assert.ok(codex.endsWith(custom), 'Codex keeps enabled = false, its tool settings and subtables');
+  assert.equal(tokensIn(home).codex, token);
+});
+
+test('setup leaves an innstance entry it did not write unless --force', async (t) => {
+  const server = await startFakeServer();
+  t.after(server.close);
+  const home = tempHome(t);
+  const p = configPaths(home);
+  fs.mkdirSync(path.dirname(p.cursor), { recursive: true });
+  const theirs = '{"mcpServers": {"innstance": {"command": "my-local-thing", "args": ["--x"]}}}\n';
+  fs.writeFileSync(p.cursor, theirs);
+  const { ctx, err, text } = makeContext(home, server, { agents: ['cursor', 'claude'] });
+  assert.equal(await main([], ctx), 1, text());
+  assert.equal(fs.readFileSync(p.cursor, 'utf8'), theirs);
+  assert.match(err.join('\n'), /Cursor: left .*mcp\.json alone: its "innstance" server runs a local command; re-run with --force/);
+  assert.ok(tokensIn(home).claude, 'the other agent is still connected');
+
+  const forced = makeContext(home, server);
+  assert.equal(await main(['--agents', 'cursor', '--force'], forced.ctx), 0, forced.text());
+  assert.deepEqual(readJSON(p.cursor).mcpServers.innstance, { url: server.origin + '/mcp', headers: { Authorization: `Bearer ${loadSession(forced.ctx).token}` } });
+  assert.match(forced.text(), /replaced the "innstance" entry \(--force\)/);
+});
+
+test('no agent is left holding a token a new sign-in ended', async (t) => {
+  // MCP is refusing every token: setup signs in again (--relogin), which
+  // ends the old session, and must still hand the new token to the agent
+  // connected earlier even though it writes no new config.
+  const server = await startFakeServer();
+  t.after(server.close);
+  const home = tempHome(t);
+  const first = makeContext(home, server, { agents: ['cursor'] });
+  assert.equal(await main([], first.ctx), 0, first.text());
+  server.state.mcp = 'refuse';
+  const again = makeContext(home, server);
+  assert.equal(await main(['--relogin'], again.ctx), 1, again.text());
+  const token = loadSession(again.ctx).token;
+  assert.equal(tokensIn(home).cursor, token);
+  assert.equal(server.validToken(token), true);
+  assert.match(again.err.join('\n'), /refused this token/);
 });
 
 test('a session revoked from the dashboard leads to a fresh sign-in', async (t) => {
@@ -164,7 +235,8 @@ test('setup with nothing to connect stops before sign-in', async (t) => {
 
 test('setup does not write configs for an MCP endpoint that is not live', async (t) => {
   const cases = [
-    { name: 'not deployed', mcp: 'missing', code: 0, configs: false, message: /not available on this server yet/ },
+    { name: 'not deployed', mcp: 'missing', code: 0, configs: false, signedIn: false, message: /not available on this server yet, so this machine was not signed in/ },
+    { name: 'token not allowed', mcp: '403', code: 1, configs: false, message: /does not allow this session.*npx innstance@latest/ },
     { name: 'outage', mcp: '500', code: 0, configs: true, message: /writing the configs anyway/ },
     { name: 'not checked', mcp: 'missing', flags: ['--skip-mcp-check'], code: 0, configs: true, message: /not checked/ },
   ];
@@ -175,6 +247,7 @@ test('setup does not write configs for an MCP endpoint that is not live', async 
     assert.equal(await main(c.flags || [], ctx), c.code, `${c.name}: ${text()}`);
     assert.equal(fs.existsSync(configPaths(home).cursor), c.configs, c.name);
     assert.match(text(), c.message, c.name);
+    assert.equal(server.state.deviceNames.length, c.signedIn === false ? 0 : 1, `${c.name}: signed in?`);
     assert.ok(fs.existsSync(path.join(home, '.agents', 'skills', 'innstance', 'SKILL.md')), `${c.name}: the skill is installed regardless`);
     await server.close();
   }
@@ -242,7 +315,12 @@ test('a saved session is never sent to a different control plane', async (t) => 
   assert.equal(await main([], a.ctx), 0);
   const token = loadSession(a.ctx).token;
   const b = makeContext(home, second);
-  assert.equal(await main(['--agents', 'cursor'], b.ctx), 0, b.text());
+  // Cursor's entry points at the first control plane: moving it needs --force.
+  assert.equal(await main(['--agents', 'cursor'], b.ctx), 1, b.text());
+  assert.match(b.err.join('\n'), /points at http:\/\/127\.0\.0\.1:\d+\/mcp; re-run with --force/);
+  assert.equal(tokensIn(home).cursor, token);
+  const c = makeContext(home, second);
+  assert.equal(await main(['--agents', 'cursor', '--force'], c.ctx), 0, c.text());
   assert.ok(second.state.requests.every((r) => r.auth !== token), 'the first server\'s token never reaches the second');
   assert.equal(second.state.deviceNames.length, 1);
 });

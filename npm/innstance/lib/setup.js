@@ -40,6 +40,21 @@ async function ensureSession(ctx, origin, { relogin }) {
   return session;
 }
 
+// The words for each writeMCP outcome. A refresh is an agent the person did
+// not name this time, whose token was replaced by a new sign-in.
+function describeWrite(result, refreshed) {
+  switch (result.status) {
+    case 'added':
+      return 'added the "innstance" MCP server to';
+    case 'updated':
+      return refreshed ? 'gave the new session to the "innstance" MCP server in' : 'updated the "innstance" MCP server in';
+    case 'replaced':
+      return 'replaced the "innstance" entry (--force) in';
+    default:
+      return 'the "innstance" MCP server is already set in';
+  }
+}
+
 async function setup(ctx, opts) {
   const origin = opts.origin;
   const mcp = mcpURL(origin);
@@ -55,57 +70,87 @@ async function setup(ctx, opts) {
     ctx.err('Name the ones to set up, for example:  npx innstance --agents claude,cursor');
     return 1;
   }
-  // An agent connected earlier keeps working only if it gets the current
-  // token: a new sign-in replaces this machine's previous npx session on the
-  // server. So every config already pointing at this endpoint is refreshed,
-  // not just the ones named this time.
-  const refresh = AGENTS.filter((a) => !selected.includes(a) && (readMCP(a, ctx).entry || {}).url === mcp);
   ctx.out(`Connecting ${names(selected)} to Innstance.`);
 
-  let session;
-  try {
-    session = await ensureSession(ctx, origin, opts);
-  } catch (err) {
-    ctx.err(`Sign-in failed: ${err.message}`);
-    return 1;
-  }
-
-  // Do not write configs that would leave every agent showing a failing
-  // server: check the endpoint first, with the token the agents will use.
-  let writeConfigs = true;
+  // First ask whether there is an MCP endpoint at all. That needs no token
+  // (a missing route answers 404 to anyone), and signing in to a control
+  // plane without one would only mint a session that nothing uses.
   let mcpMissing = false;
   if (opts.skipMcpCheck) {
     ctx.out(`MCP endpoint ${mcp}: not checked (--skip-mcp-check).`);
-  } else {
+  } else if ((await probeMCP(mcp, '')).state === 'missing') {
+    mcpMissing = true;
+    ctx.err(`${mcp} is not available on this server yet, so this machine was not signed in and no agent MCP config was written. Run npx innstance again once it is live.`);
+  }
+
+  let session = null;
+  if (!mcpMissing) {
+    try {
+      session = await ensureSession(ctx, origin, opts);
+    } catch (err) {
+      ctx.err(`Sign-in failed: ${err.message}`);
+      return 1;
+    }
+  }
+
+  // Do not write configs that would leave every agent showing a failing
+  // server: check the endpoint again, with the token the agents will use.
+  let writeNew = Boolean(session);
+  if (session && !opts.skipMcpCheck) {
     const probe = await probeMCP(mcp, session.token);
     if (probe.state === 'ok') {
       ctx.out(`MCP endpoint ${mcp}: ${probe.detail}.`);
     } else if (probe.state === 'missing') {
-      writeConfigs = false;
+      writeNew = false;
       mcpMissing = true;
       ctx.err(`${probe.detail}; agent MCP configs were not written. Run npx innstance again once it is live.`);
     } else if (probe.state === 'auth') {
-      writeConfigs = false;
+      writeNew = false;
       failures++;
       ctx.err(`MCP endpoint ${mcp}: ${probe.detail}; agent configs were not written. Try npx innstance --relogin.`);
+    } else if (probe.state === 'forbidden') {
+      writeNew = false;
+      failures++;
+      ctx.err(`MCP endpoint ${mcp}: ${probe.detail}; agent configs were not written. Signing in again gives the same kind of session, so try the newest version: npx innstance@latest`);
     } else {
       ctx.err(`Warning: could not confirm the MCP endpoint (${probe.detail}); writing the configs anyway.`);
     }
   }
 
+  // A new sign-in replaced this machine's previous npx session on the
+  // server, so an agent connected earlier still holds a token that no longer
+  // works. Every entry already pointing at this endpoint gets the new token,
+  // whatever the probe said, because the old one is dead either way. Only
+  // the url and Authorization lines of those entries change. A reused
+  // session changed nothing on the server, so agents not named this time are
+  // left alone.
+  const refresh =
+    session && !session.reused
+      ? AGENTS.filter((a) => {
+          if (writeNew && selected.includes(a)) return false;
+          const { entry } = readMCP(a, ctx);
+          return Boolean(entry) && entry.url === mcp && entry.token !== session.token;
+        })
+      : [];
+
   const connected = [];
-  if (writeConfigs) {
-    ctx.out('');
-    for (const agent of selected.concat(refresh)) {
-      try {
-        const file = await writeMCP(agent, ctx, mcp, session.token);
-        connected.push(agent);
-        const note = refresh.includes(agent) ? ' (refreshed with the current session)' : '';
-        ctx.out(`  ${agent.name}: MCP server "innstance" in ${tildify(ctx, file)}${note}`);
-      } catch (err) {
+  const targets = (writeNew ? selected : []).concat(refresh);
+  if (targets.length > 0) ctx.out('');
+  for (const agent of targets) {
+    const refreshed = refresh.includes(agent);
+    try {
+      const result = await writeMCP(agent, ctx, mcp, session.token, { force: opts.force && !refreshed });
+      const where = tildify(ctx, result.file);
+      if (result.status === 'skipped') {
         failures++;
-        ctx.err(`  ${agent.name}: ${err.message}`);
+        ctx.err(`  ${agent.name}: left ${where} alone: ${result.detail}`);
+        continue;
       }
+      connected.push(agent);
+      ctx.out(`  ${agent.name}: ${describeWrite(result, refreshed)} ${where}`);
+    } catch (err) {
+      failures++;
+      ctx.err(`  ${agent.name}: ${err.message}`);
     }
   }
 
@@ -156,11 +201,13 @@ async function setup(ctx, opts) {
   }
   ctx.out(`  ${step++}. Check the connection any time:  npx innstance doctor`);
   ctx.out(`     Disconnect and sign out:          npx innstance remove`);
-  ctx.out('');
-  // The server names the session "cli-<device name>"; say it the way the
-  // dashboard's token list shows it, so it can be found there.
-  const listed = session.deviceName ? `"cli-${session.deviceName}"` : 'this machine\'s npx session';
-  ctx.out(`Agents here sign in with ${listed}. Revoke it any time from ${origin}/dashboard.`);
+  if (session) {
+    ctx.out('');
+    // The server names the session "cli-<device name>"; say it the way the
+    // dashboard's token list shows it, so it can be found there.
+    const listed = session.deviceName ? `"cli-${session.deviceName}"` : "this machine's npx session";
+    ctx.out(`Agents here sign in with ${listed}. Revoke it any time from ${origin}/dashboard.`);
+  }
   return failures > 0 ? 1 : 0;
 }
 

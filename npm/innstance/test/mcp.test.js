@@ -15,6 +15,7 @@ test('probeMCP reports what an agent would find at the endpoint', async (t) => {
     { name: 'token refused', mcp: 'json', token: 'bogus', state: 'auth', detail: /refused this token/ },
     { name: 'no token', mcp: 'json', token: false, state: 'auth', detail: /needs a token/ },
     { name: 'server error', mcp: '500', token: true, state: 'error', detail: /HTTP 500/ },
+    { name: 'signed in but not allowed to use MCP', mcp: '403', token: true, state: 'forbidden', detail: /does not allow this session/ },
   ];
   for (const c of cases) {
     const server = await startFakeServer({ mcp: c.mcp });

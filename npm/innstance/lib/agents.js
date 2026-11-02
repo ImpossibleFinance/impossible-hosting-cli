@@ -12,15 +12,15 @@ const { PRIVATE_FILE, exists, readTextIfExists, withFileLock, writeFileAtomic } 
 // into a project), because the point is that Innstance is available in every
 // project the person opens afterwards.
 //
-//   agent        MCP servers                                   skills
-//   Claude Code  ~/.claude.json  mcpServers.innstance          ~/.claude/skills/innstance
-//   Codex        ~/.codex/config.toml  [mcp_servers.innstance]  ~/.agents/skills/innstance
-//   Cursor       ~/.cursor/mcp.json  mcpServers.innstance      ~/.agents/skills/innstance
-//   OpenCode     ~/.config/opencode/opencode.json  mcp.innstance  ~/.agents/skills/innstance
+//   agent     MCP servers                                      skills
+//   claude    ~/.claude.json  mcpServers.innstance             ~/.claude/skills/innstance
+//   codex     ~/.codex/config.toml  [mcp_servers.innstance]    ~/.agents/skills/innstance
+//   cursor    ~/.cursor/mcp.json  mcpServers.innstance         ~/.agents/skills/innstance
+//   opencode  ~/.config/opencode/opencode.json  mcp.innstance  ~/.agents/skills/innstance
 //
-// ~/.agents/skills is the shared user skills directory that Codex, Cursor and
-// OpenCode all read, so one copy serves the three. Claude Code reads only its
-// own directory. CLAUDE_CONFIG_DIR, CODEX_HOME and XDG_CONFIG_HOME move these
+// ~/.agents/skills is the shared user skills directory that codex, cursor and
+// opencode all read, so one copy serves the three. The claude agent reads
+// only its own directory. CLAUDE_CONFIG_DIR, CODEX_HOME and XDG_CONFIG_HOME move these
 // locations the same way they move them for the agents themselves.
 //
 // The token goes into each file as a literal Authorization header. The
@@ -61,9 +61,29 @@ function bearer(token) {
   return `Bearer ${token}`;
 }
 
-function tokenFromHeader(value) {
-  const m = typeof value === 'string' && /^Bearer\s+(\S+)$/.exec(value);
+// HTTP header names are case-insensitive, and people write "authorization"
+// as often as "Authorization"; both are read, and both are updated.
+function authorizationKeys(headers) {
+  return headers && typeof headers === 'object' && !Array.isArray(headers) ? Object.keys(headers).filter((k) => k.toLowerCase() === 'authorization') : [];
+}
+
+function tokenFrom(headers) {
+  const key = authorizationKeys(headers)[0];
+  const m = key && typeof headers[key] === 'string' && /^Bearer\s+(\S+)$/.exec(headers[key]);
   return m ? m[1] : '';
+}
+
+// describeEntry says, for a message, what an entry that is not ours does.
+function describeEntry(entry) {
+  if (entry.url) return `points at ${entry.url}`;
+  return entry.command ? 'runs a local command' : 'has no url';
+}
+
+// setIfDifferent sets one member of a JSON(C) document, leaving the text
+// byte-for-byte alone when it already holds that value.
+function setIfDifferent(text, pathParts, value) {
+  if (JSON.stringify(jsonc.getAt(jsonc.parse(text), pathParts)) === JSON.stringify(value)) return text;
+  return jsonc.setAt(text, pathParts, value);
 }
 
 // OpenCode reads opencode.json and opencode.jsonc from its config directory
@@ -90,14 +110,35 @@ function jsonAgent(spec) {
       const doc = jsonc.parse(text || '');
       const entry = jsonc.getAt(doc, spec.jsonPath);
       if (entry === undefined) return null;
-      if (!entry || typeof entry !== 'object') return { url: '', token: '' };
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return { url: '', token: '', command: false };
       return {
         url: typeof entry.url === 'string' ? entry.url : '',
-        token: tokenFromHeader(entry.headers && entry.headers.Authorization),
+        token: tokenFrom(entry.headers),
+        command: entry.command !== undefined,
       };
     },
     editEntry(text, url, token) {
       return jsonc.setAt(text, spec.jsonPath, spec.entry(url, token), { seed: spec.seed });
+    },
+    // updateEntry changes only what makes the entry reach Innstance: the url
+    // and the Authorization header (and the transport type, only when the
+    // entry has none). enabled, timeouts and anything else the person set
+    // stay as they are.
+    updateEntry(text, url, token) {
+      const entry = jsonc.getAt(jsonc.parse(text), spec.jsonPath);
+      let out = text;
+      for (const [key, value] of Object.entries(spec.shape || {})) {
+        if (entry[key] === undefined) out = setIfDifferent(out, spec.jsonPath.concat(key), value);
+      }
+      out = setIfDifferent(out, spec.jsonPath.concat('url'), url);
+      if (entry.headers !== undefined && (!entry.headers || typeof entry.headers !== 'object' || Array.isArray(entry.headers))) {
+        throw new Error('its innstance entry has a "headers" value that is not an object');
+      }
+      const keys = authorizationKeys(entry.headers);
+      for (const key of keys.length > 0 ? keys : ['Authorization']) {
+        out = setIfDifferent(out, spec.jsonPath.concat('headers', key), bearer(token));
+      }
+      return out;
     },
     removeEntry(text) {
       return jsonc.removeAt(text, spec.jsonPath);
@@ -115,6 +156,7 @@ const AGENTS = [
     skillsRoot: (ctx) => path.join(claudeDir(ctx), 'skills'),
     jsonPath: ['mcpServers', SERVER_NAME],
     entry: (url, token) => ({ type: 'http', url, headers: { Authorization: bearer(token) } }),
+    shape: { type: 'http' },
     reload: 'restart Claude Code (or run /mcp in a session)',
   }),
   {
@@ -130,11 +172,15 @@ const AGENTS = [
       if (!entry) return null;
       return {
         url: typeof entry.url === 'string' ? entry.url : '',
-        token: tokenFromHeader(entry.http_headers && entry.http_headers.Authorization),
+        token: tokenFrom(entry.http_headers),
+        command: entry.command !== undefined,
       };
     },
     editEntry(text, url, token) {
       return toml.setServer(text || '', SERVER_NAME, { url, http_headers: { Authorization: bearer(token) } }, { comment: MANAGED_NOTE });
+    },
+    updateEntry(text, url, token) {
+      return toml.updateServer(text, SERVER_NAME, { url, authorization: bearer(token) });
     },
     removeEntry(text) {
       return toml.removeServer(text, SERVER_NAME);
@@ -159,6 +205,7 @@ const AGENTS = [
     jsonPath: ['mcp', SERVER_NAME],
     seed: { $schema: 'https://opencode.ai/config.json' },
     entry: (url, token) => ({ type: 'remote', url, enabled: true, headers: { Authorization: bearer(token) } }),
+    shape: { type: 'remote' },
     reload: 'restart OpenCode',
   }),
 ];
@@ -203,13 +250,32 @@ function readMCP(agent, ctx) {
   }
 }
 
-async function writeMCP(agent, ctx, url, token) {
+// writeMCP connects one agent and reports what it did:
+//
+//   added      there was no innstance entry; a complete one was written
+//   updated    the entry already pointed at this endpoint; only its url and
+//              Authorization header were changed, so anything else the
+//              person set on it (enabled, tool approvals, timeouts) stays
+//   unchanged  the entry already held this url and token
+//   replaced   an entry that was not ours was overwritten (force)
+//   skipped    an innstance entry that points somewhere else, or runs a
+//              local command, was put there by someone else and is left
+//              alone unless force is set
+async function writeMCP(agent, ctx, url, token, { force = false } = {}) {
   const file = agent.configPath(ctx);
+  let result;
   await withFileLock(file, async (real) => {
     const before = readTextIfExists(real);
     let after;
     try {
-      after = agent.editEntry(before, url, token);
+      const entry = before === null ? null : agent.readEntry(before);
+      const ours = Boolean(entry) && entry.url === url;
+      if (entry && !ours && !force) {
+        result = { file, status: 'skipped', detail: `its "innstance" server ${describeEntry(entry)}; re-run with --force to replace it` };
+        return;
+      }
+      after = ours ? agent.updateEntry(before, url, token) : agent.editEntry(before, url, token);
+      result = { file, status: !entry ? 'added' : !ours ? 'replaced' : after === before ? 'unchanged' : 'updated' };
     } catch (err) {
       throw new Error(`${file} was not changed: ${err.message}`);
     }
@@ -223,7 +289,7 @@ async function writeMCP(agent, ctx, url, token) {
       } catch {}
     }
   });
-  return file;
+  return result;
 }
 
 // removeMCP deletes the entry only when it points at this control plane's
@@ -233,7 +299,7 @@ async function removeMCP(agent, ctx, url) {
   const { file, entry, error } = readMCP(agent, ctx);
   if (error) return { file, status: 'error', detail: error };
   if (!entry) return { file, status: 'absent' };
-  if (entry.url !== url) return { file, status: 'skipped', detail: `its innstance entry points at ${entry.url || 'another server'}` };
+  if (entry.url !== url) return { file, status: 'skipped', detail: `its innstance entry ${describeEntry(entry)}` };
   await withFileLock(file, async (real) => {
     const before = readTextIfExists(real);
     const after = agent.removeEntry(before);

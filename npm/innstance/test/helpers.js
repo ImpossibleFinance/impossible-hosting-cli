@@ -69,7 +69,7 @@ async function startFakeServer(overrides = {}) {
     email: 'dev@example.com',
     pendingPolls: 1,
     deny: false,
-    mcp: 'json', // json | sse | missing | 500
+    mcp: 'json', // json | sse | missing | 500 | refuse (401 for every token) | 403
     healthStatus: 200,
     grant: null, // override the start response body
     startStatus: 200,
@@ -141,7 +141,8 @@ async function startFakeServer(overrides = {}) {
     if (url.pathname === '/mcp') {
       if (state.mcp === 'missing') return json(res, 404, { error: 'not found' });
       if (state.mcp === '500') return json(res, 500, { error: 'boom' });
-      if (!valid(bearerOf(req))) return json(res, 401, { error: 'unauthorized' });
+      if (state.mcp === 'refuse' || !valid(bearerOf(req))) return json(res, 401, { error: 'unauthorized' });
+      if (state.mcp === '403') return json(res, 403, { error: 'this token may not use MCP' });
       if (req.method === 'DELETE') {
         state.mcpDeletes++;
         res.writeHead(204);
