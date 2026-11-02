@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 verifier=$repo_root/scripts/verify-channel.sh
-for tool in curl ssh-keygen jq python3; do
+for tool in curl ssh-keygen jq python3 git; do
   command -v "$tool" >/dev/null || { echo "missing required test tool: $tool" >&2; exit 1; }
 done
 if command -v sha256sum >/dev/null 2>&1; then
@@ -505,5 +505,34 @@ build_archives 0
 publish "$next_build" "$next_source"
 accept "the well-formed next release" "$test_root/accepted-state.json" "$test_root/next-state.json"
 test "$(jq -r .build_id "$test_root/next-state.json")" = "$next_build"
+
+# With a clone of the source repository, the verifier also checks that the
+# build ID is the UTC committer time of the signed source commit. The
+# fixture commit is made at 03:02:03 in UTC+2.
+source_repo=$test_root/source
+git init -q "$source_repo"
+empty_tree=$(git -C "$source_repo" mktree < /dev/null)
+source_commit=$(
+  GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid \
+    GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid \
+    GIT_AUTHOR_DATE='2026-09-06T03:02:03+02:00' GIT_COMMITTER_DATE='2026-09-06T03:02:03+02:00' \
+    git -C "$source_repo" commit-tree --no-gpg-sign -m 'cli: a change' "$empty_tree"
+)
+publish "20260906-010203-$source_commit" "$source_commit"
+IFHOST_CHANNEL_SOURCE_REPO=$source_repo accept "a build ID that is its source commit's time" \
+  "$test_root/next-state.json" "$test_root/source-state.json"
+grep -Fq "build_id is the commit time of source commit $source_commit" "$test_root/verifier.out"
+
+publish "20260906-010204-$source_commit" "$source_commit"
+IFHOST_CHANNEL_SOURCE_REPO=$source_repo reject "a build ID that is not its source commit's time" \
+  "is not the commit time of its signed source commit (20260906-010203 UTC)" "$test_root/next-state.json"
+
+unknown_source=3333333333333333333333333333333333333333
+publish "20260906-010203-$unknown_source" "$unknown_source"
+IFHOST_CHANNEL_SOURCE_REPO=$source_repo reject "a source commit missing from the clone" \
+  "signed source commit $unknown_source is not a commit in $source_repo" "$test_root/next-state.json"
+
+IFHOST_CHANNEL_SOURCE_REPO=$test_root/not-a-repository reject "a source clone that does not exist" \
+  "IFHOST_CHANNEL_SOURCE_REPO is not a git repository" "$test_root/next-state.json"
 
 echo "verified the twelve-archive channel fixture, repeated identities, source binding, and rollback rejection"

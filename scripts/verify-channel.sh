@@ -30,6 +30,15 @@ fi
 for file in "$allowed_signers" "$previous_state"; do
   test -f "$file" || { echo "missing verifier input: $file" >&2; exit 1; }
 done
+# Optional: a local clone of the private source repository.
+source_repo=${IFHOST_CHANNEL_SOURCE_REPO:-}
+if [[ -n $source_repo ]]; then
+  command -v git >/dev/null || { echo "missing required verifier: git" >&2; exit 1; }
+  git -C "$source_repo" rev-parse --git-dir >/dev/null 2>&1 || {
+    echo "IFHOST_CHANNEL_SOURCE_REPO is not a git repository: $source_repo" >&2
+    exit 1
+  }
+fi
 
 openssl_bin=
 for candidate in "${OPENSSL_BIN:-}" openssl \
@@ -349,6 +358,38 @@ PY
 }
 
 build_id=$(jq -r .build_id "$verify_root/parsed.json")
+
+# The build ID's timestamp is the UTC committer time of the signed source
+# commit. The source repository is private, so a public audit cannot check
+# that; a maintainer with a clone can, by naming it here.
+if [[ -n $source_repo ]]; then
+  source_commit=$(jq -r .source_commit "$verify_root/parsed.json")
+  test "$(git -C "$source_repo" cat-file -t "$source_commit" 2>/dev/null)" = commit || {
+    echo "signed source commit $source_commit is not a commit in $source_repo" >&2
+    exit 1
+  }
+  git -C "$source_repo" cat-file commit "$source_commit" > "$verify_root/source-commit.txt"
+  python3 - "$verify_root/source-commit.txt" "$build_id" <<'PY'
+import datetime
+import pathlib
+import re
+import sys
+
+commit_path, build_id = pathlib.Path(sys.argv[1]), sys.argv[2]
+headers = commit_path.read_bytes().split(b"\n\n", 1)[0].decode("utf-8", "replace").split("\n")
+committers = [line for line in headers if line.startswith("committer ")]
+match = re.fullmatch(r"committer .* (\d+) [+-]\d{4}", committers[0]) if len(committers) == 1 else None
+if not match:
+    raise SystemExit("signed source commit has no readable committer time")
+committed = datetime.datetime.fromtimestamp(int(match.group(1)), datetime.timezone.utc)
+if build_id[:15] != committed.strftime("%Y%m%d-%H%M%S"):
+    raise SystemExit(
+        f"build_id {build_id} is not the commit time of its signed source commit "
+        f"({committed.strftime('%Y%m%d-%H%M%S')} UTC)"
+    )
+PY
+fi
+
 expected_archives=$(jq '.artifacts | length' "$verify_root/parsed.json")
 checked_archives=0
 mkdir "$verify_root/payloads"
@@ -431,3 +472,6 @@ test "$checked_archives" -eq "$expected_archives" || {
 
 cp "$verify_root/next-state.json" "$next_state"
 echo "verified server-signed CLI channel $build_id ($checked_archives archives)"
+if [[ -n $source_repo ]]; then
+  echo "build_id is the commit time of source commit $source_commit in $source_repo"
+fi
