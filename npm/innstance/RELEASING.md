@@ -10,22 +10,23 @@ npm token is stored in this repository or its secrets.
 Provenance requires a public source repository. That is why the package lives
 here and not in the private platform repository.
 
-## Before the first release (claim the name as soon as possible)
+## Before this package is merged
 
-1. **Claim the name first.** This repository is public, and its READMEs
-   describe `npx innstance`; until the name is claimed they carry a "not
-   published yet" warning, which the release commit removes from
-   `npm/innstance/README.md` (it ships in the tarball). `innstance` was unclaimed on
+1. **Claim the name first.** This repository is public, and once merged its
+   READMEs tell people to run `npx innstance`. `innstance` was unclaimed on
    the registry when this package was written (and so was `innstance-setup`).
    Whoever registers it first has their code run by everyone who follows
    those instructions, with access to the home directory and its agent
-   configs. So before the first release, publish a placeholder `0.0.0`
+   configs. So before the branch is merged, publish a placeholder `0.0.0`
    that holds only a README, by hand, from a company-owned npm account or
    organisation with two-factor authentication. Do not use a personal
-   account. Do it as soon as possible, not just before releasing: the name
+   account. Do it as soon as possible, not just before merging: the name
    is already guessable from the product and its CLI, and an open pull
    request makes the plan visible, even though GitHub's code search
    indexes only the default branch.
+   Until the real release, `npm/innstance/README.md` opens with a "not
+   published yet" warning; the release commit removes it, because that
+   README ships in the tarball.
 2. **Decide the token model before the first real release.** The approved
    plan says new tokens are scoped and MCP tokens expire after 30 days (A2,
    then MCP OAuth in A6). This package uses the only credential the device
