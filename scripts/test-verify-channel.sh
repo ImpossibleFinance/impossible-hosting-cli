@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 verifier=$repo_root/scripts/verify-channel.sh
-for tool in curl ssh-keygen jq python3; do
+for tool in curl ssh-keygen jq python3 git; do
   command -v "$tool" >/dev/null || { echo "missing required test tool: $tool" >&2; exit 1; }
 done
 if command -v sha256sum >/dev/null 2>&1; then
@@ -35,44 +35,80 @@ mkdir -p "$channel/cli" "$channel/dl"
 ssh-keygen -q -t ed25519 -N '' -C ifhost-test -f "$test_root/key"
 awk '{ print "ifhost " $1 " " $2 }' "$test_root/key.pub" > "$test_root/release-signers"
 
-python3 - "$channel/dl" <<'PY'
+# The twelve archives in the order the publisher signs them: each name's
+# archives in name order, innstance first.
+archives=()
+for family in innstance ifhost; do
+  for platform in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64; do
+    archives+=("${family}_${platform}.tar.gz")
+  done
+  for platform in windows_amd64 windows_arm64; do
+    archives+=("${family}_${platform}.zip")
+  done
+done
+
+# build_archives MTIME [ARCHIVE:member=NAME | ARCHIVE:payload=SUFFIX ...]
+#
+# Packs one build per platform under both names, the way the publisher does,
+# with every timestamp inside the archive set to MTIME. A fixed MTIME
+# rebuilds byte-identical archives; a different one stands in for a rebuild
+# that stamps the time it ran. The overrides break one archive on purpose.
+build_archives() {
+  python3 - "$channel/dl" "$@" <<'PY'
+import gzip
 import hashlib
 import io
 import pathlib
 import stat
 import sys
 import tarfile
+import time
 import zipfile
 
-root = pathlib.Path(sys.argv[1])
-payload = b"#!/bin/sh\nexit 0\n"
-archives = [
-    "ifhost_darwin_amd64.tar.gz",
-    "ifhost_darwin_arm64.tar.gz",
-    "ifhost_linux_amd64.tar.gz",
-    "ifhost_linux_arm64.tar.gz",
-    "ifhost_windows_amd64.zip",
-    "ifhost_windows_arm64.zip",
-]
-for name in archives:
-    path = root / name
-    if name.endswith(".zip"):
-        info = zipfile.ZipInfo("ifhost.exe")
-        info.create_system = 3
-        info.external_attr = (stat.S_IFREG | 0o755) << 16
-        info.compress_type = zipfile.ZIP_DEFLATED
-        with zipfile.ZipFile(path, "w") as archive:
-            archive.writestr(info, payload)
-    else:
-        info = tarfile.TarInfo("ifhost")
-        info.mode = 0o755
-        info.mtime = 0
-        info.size = len(payload)
-        with tarfile.open(path, "w:gz") as archive:
-            archive.addfile(info, io.BytesIO(payload))
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    root.joinpath(name + ".sha256").write_text(f"{digest}  {name}\n", encoding="ascii")
+root, mtime = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+overrides = {}
+for spec in sys.argv[3:]:
+    archive, assignment = spec.split(":", 1)
+    field, value = assignment.split("=", 1)
+    overrides.setdefault(archive, {})[field] = value
+for family in ["innstance", "ifhost"]:
+    for platform in [
+        "darwin_amd64",
+        "darwin_arm64",
+        "linux_amd64",
+        "linux_arm64",
+        "windows_amd64",
+        "windows_arm64",
+    ]:
+        windows = platform.startswith("windows_")
+        name = f"{family}_{platform}" + (".zip" if windows else ".tar.gz")
+        override = overrides.pop(name, {})
+        member = override.get("member", family + (".exe" if windows else ""))
+        payload = f"#!/bin/sh\n# {platform}{override.get('payload', '')}\nexit 0\n".encode()
+        path = root / name
+        if windows:
+            info = zipfile.ZipInfo(member, date_time=time.gmtime(max(mtime, 315532800))[:6])
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | 0o755) << 16
+            info.compress_type = zipfile.ZIP_DEFLATED
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr(info, payload)
+        else:
+            info = tarfile.TarInfo(member)
+            info.mode = 0o755
+            info.mtime = mtime
+            info.size = len(payload)
+            buffer = io.BytesIO()
+            with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as compressed:
+                with tarfile.open(fileobj=compressed, mode="w") as archive:
+                    archive.addfile(info, io.BytesIO(payload))
+            path.write_bytes(buffer.getvalue())
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        root.joinpath(name + ".sha256").write_text(f"{digest}  {name}\n", encoding="ascii")
+if overrides:
+    raise SystemExit(f"unknown fixture archives: {sorted(overrides)}")
 PY
+}
 
 # Extract the seed from the unencrypted OpenSSH fixture key and wrap it as a
 # PKCS#8 Ed25519 key. OpenSSL can then sign the same canonical JSON as Go.
@@ -119,52 +155,83 @@ if private_key[32:] != public_key:
 der_path.write_bytes(bytes.fromhex("302e020100300506032b657004220420") + private_key[:32])
 PY
 
-publish() {
-  local build_id=$1 source_commit=$2 archive digest
+write_release() {
+  local build_id=$1 source_commit=$2 archive
   {
     printf 'build_id=%s\n' "$build_id"
     printf 'source_repository=ImpossibleFinance/impossible-hosting\n'
     printf 'source_commit=%s\n' "$source_commit"
     printf 'source_workflow=docker-build\n'
-    for archive in \
-      ifhost_darwin_amd64.tar.gz ifhost_darwin_arm64.tar.gz \
-      ifhost_linux_amd64.tar.gz ifhost_linux_arm64.tar.gz \
-      ifhost_windows_amd64.zip ifhost_windows_arm64.zip; do
-      digest=$(sha256_file "$channel/dl/$archive")
-      printf 'artifact.%s=%s\n' "$archive" "$digest"
+    for archive in "${archives[@]}"; do
+      printf 'artifact.%s=%s\n' "$archive" "$(sha256_file "$channel/dl/$archive")"
     done
   } > "$channel/dl/release.txt"
+}
+
+sign_release() {
   rm -f "$channel/dl/release.txt.sig" "$channel/dl/release.txt.sshsig"
   ssh-keygen -q -Y sign -f "$test_root/key" -n ifhost-release "$channel/dl/release.txt"
   mv "$channel/dl/release.txt.sig" "$channel/dl/release.txt.sshsig"
+}
 
-  python3 - "$channel/dl" "$build_id" "$test_root/unsigned.json" <<'PY'
+# write_manifest BUILD_ID [drop:KEY | add:KEY=ARCHIVE | url:KEY=URL ...]
+#
+# Writes the unsigned /cli/version body the server would sign: the twelve
+# download keys in Go's sorted map order, url before sha256. The edits
+# reproduce one publisher mistake each.
+write_manifest() {
+  python3 - "$channel/dl" "$test_root/unsigned.json" "$@" <<'PY'
 import hashlib
 import json
 import pathlib
 import sys
 
-root, build_id, unsigned_path = pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3])
-platforms = {
-    "darwin_amd64": "ifhost_darwin_amd64.tar.gz",
-    "darwin_arm64": "ifhost_darwin_arm64.tar.gz",
-    "linux_amd64": "ifhost_linux_amd64.tar.gz",
-    "linux_arm64": "ifhost_linux_arm64.tar.gz",
-    "windows_amd64": "ifhost_windows_amd64.zip",
-    "windows_arm64": "ifhost_windows_arm64.zip",
-}
-downloads = {
-    platform: {
-        "url": f"/dl/{name}?b={build_id}",
-        "sha256": hashlib.sha256(root.joinpath(name).read_bytes()).hexdigest(),
+root, unsigned_path, build_id = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+
+
+def entry(archive):
+    return {
+        "url": f"/dl/{archive}?b={build_id}",
+        "sha256": hashlib.sha256(root.joinpath(archive).read_bytes()).hexdigest(),
     }
-    for platform, name in sorted(platforms.items())
-}
+
+
+downloads = {}
+for family in ["innstance", "ifhost"]:
+    for platform in [
+        "darwin_amd64",
+        "darwin_arm64",
+        "linux_amd64",
+        "linux_arm64",
+        "windows_amd64",
+        "windows_arm64",
+    ]:
+        archive = f"{family}_{platform}" + (".zip" if platform.startswith("windows_") else ".tar.gz")
+        key = platform if family == "ifhost" else f"{family}_{platform}"
+        downloads[key] = entry(archive)
+for edit in sys.argv[4:]:
+    action, argument = edit.split(":", 1)
+    if action == "drop":
+        del downloads[argument]
+    elif action == "add":
+        key, archive = argument.split("=", 1)
+        downloads[key] = entry(archive)
+    elif action == "url":
+        key, url = argument.split("=", 1)
+        downloads[key]["url"] = url
+    else:
+        raise SystemExit(f"unknown manifest edit: {edit}")
 unsigned_path.write_text(
-    json.dumps({"build_id": build_id, "downloads": downloads}, separators=(",", ":")),
+    json.dumps(
+        {"build_id": build_id, "downloads": dict(sorted(downloads.items()))},
+        separators=(",", ":"),
+    ),
     encoding="utf-8",
 )
 PY
+}
+
+sign_manifest() {
   "$openssl_bin" pkeyutl -sign -inkey "$test_root/private.der" -keyform DER -rawin \
     -in "$test_root/unsigned.json" -out "$test_root/signature.bin"
   python3 - "$test_root/unsigned.json" "$test_root/signature.bin" "$channel/cli/version" <<'PY'
@@ -180,11 +247,35 @@ manifest_path.write_text(json.dumps(manifest, separators=(",", ":")) + "\n", enc
 PY
 }
 
+publish() {
+  local build_id=$1 source_commit=$2
+  write_release "$build_id" "$source_commit"
+  sign_release
+  write_manifest "$build_id"
+  sign_manifest
+}
+
+# edit_release PYTHON_STATEMENTS re-signs the release record after the
+# statements have rewritten `lines`, the record without its final newline.
+edit_release() {
+  python3 - "$channel/dl/release.txt" "$1" <<'PY'
+import pathlib
+import sys
+
+path, statements = pathlib.Path(sys.argv[1]), sys.argv[2]
+lines = path.read_text(encoding="ascii")[:-1].split("\n")
+exec(statements)
+path.write_text("\n".join(lines) + "\n", encoding="ascii")
+PY
+  sign_release
+}
+
 python3 - "$channel" "$test_root/port" <<'PY' &
 import http.server
 import os
 import pathlib
 import sys
+import time
 
 root, port_path = sys.argv[1:]
 os.chdir(root)
@@ -193,6 +284,24 @@ os.chdir(root)
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, _format, *_args):
         pass
+
+    def do_GET(self):
+        # An archive named in stall/ is served once as a stuck download: the
+        # headers and a few bytes, then nothing for longer than the
+        # verifier's per-transfer limit. The marker is consumed, so a retry
+        # gets the whole file.
+        name = self.path.split("?", 1)[0].rsplit("/", 1)[-1]
+        try:
+            pathlib.Path("stall", name).unlink()
+        except OSError:
+            return super().do_GET()
+        body = pathlib.Path("dl", name).read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body[:16])
+        self.wfile.flush()
+        time.sleep(600)
 
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
@@ -207,10 +316,56 @@ done
 test -s "$test_root/port" || { echo "fixture server did not start" >&2; exit 1; }
 origin=http://127.0.0.1:$(cat "$test_root/port")
 
+run_verifier() {
+  IFHOST_CHANNEL_ALLOW_HTTP=1 OPENSSL_BIN="$openssl_bin" \
+    "$verifier" "$origin" "$test_root/release-signers" "$1" "$2" \
+    > "$test_root/verifier.out" 2> "$test_root/verifier.err"
+}
+
+# accept DESCRIPTION PREVIOUS_STATE NEXT_STATE
+accept() {
+  local description=$1 previous=$2 next=$3
+  run_verifier "$previous" "$next" || {
+    echo "channel verifier rejected $description:" >&2
+    cat "$test_root/verifier.err" >&2
+    exit 1
+  }
+}
+
+# reject DESCRIPTION REASON PREVIOUS_STATE
+#
+# The verifier must fail for REASON, not merely fail: a fixture that breaks
+# something else first would otherwise pass without testing anything.
+reject() {
+  local description=$1 reason=$2 previous=$3
+  rm -f "$test_root/rejected-state.json"
+  if run_verifier "$previous" "$test_root/rejected-state.json"; then
+    echo "channel verifier accepted $description" >&2
+    exit 1
+  fi
+  grep -Fq -- "$reason" "$test_root/verifier.err" || {
+    echo "channel verifier rejected $description for the wrong reason:" >&2
+    cat "$test_root/verifier.err" >&2
+    exit 1
+  }
+  test ! -e "$test_root/rejected-state.json" || {
+    echo "channel verifier wrote a state after rejecting $description" >&2
+    exit 1
+  }
+}
+
+same_state() {
+  test "$(jq -cS . "$1")" = "$(jq -cS . "$2")" || {
+    echo "channel state moved: $(jq -c . "$1") became $(jq -c . "$2")" >&2
+    exit 1
+  }
+}
+
+build_archives 0
 legacy_source=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 publish "20260903-010203" "$legacy_source"
 legacy_sha=$(sha256_file "$channel/dl/release.txt")
-cat > "$test_root/previous-state.json" <<EOF
+cat > "$test_root/legacy-state.json" <<EOF
 {
   "schema": 1,
   "build_id": "20260903-010203",
@@ -218,69 +373,237 @@ cat > "$test_root/previous-state.json" <<EOF
   "release_sha256": "$legacy_sha"
 }
 EOF
-IFHOST_CHANNEL_ALLOW_HTTP=1 OPENSSL_BIN="$openssl_bin" \
-  "$verifier" "$origin" "$test_root/release-signers" \
-  "$test_root/previous-state.json" "$test_root/legacy-state.json" >/dev/null
+accept "the accepted release, observed again" \
+  "$test_root/legacy-state.json" "$test_root/legacy-again-state.json"
+same_state "$test_root/legacy-state.json" "$test_root/legacy-again-state.json"
+grep -Fq "verified server-signed CLI channel 20260903-010203 (12 archives)" "$test_root/verifier.out"
+
+# Once the CLI is built from the newest commit that changed it, a server
+# deploy that leaves the CLI alone keeps its build ID. Rebuilding
+# reproducible archives and republishing then yields the same signed record,
+# which passes without moving the state.
+build_archives 0
+publish "20260903-010203" "$legacy_source"
+accept "a server deploy that republishes the same release" \
+  "$test_root/legacy-state.json" "$test_root/redeploy-state.json"
+same_state "$test_root/legacy-state.json" "$test_root/redeploy-state.json"
+
+# The same identity naming the deploy's own commit is a different release.
+deploy_source=9999999999999999999999999999999999999999
+publish "20260903-010203" "$deploy_source"
+reject "a repeated build ID naming another source commit" \
+  "release snapshot changed without a new release identity" "$test_root/legacy-state.json"
+
+# So is a rebuild whose archives record the time they were packed.
+build_archives 1791792564
+publish "20260903-010203" "$legacy_source"
+reject "a repeated build ID over rebuilt archives" \
+  "release snapshot changed without a new release identity" "$test_root/legacy-state.json"
+build_archives 0
 
 # A newer signed timestamp-only release remains valid during the publisher
 # transition, before the channel records its first commit-bound identity.
 legacy_advance_source=cccccccccccccccccccccccccccccccccccccccc
 publish "20260903-020304" "$legacy_advance_source"
-IFHOST_CHANNEL_ALLOW_HTTP=1 OPENSSL_BIN="$openssl_bin" \
-  "$verifier" "$origin" "$test_root/release-signers" \
-  "$test_root/legacy-state.json" "$test_root/legacy-advanced-state.json" >/dev/null
+accept "a newer timestamp-only release" \
+  "$test_root/legacy-state.json" "$test_root/legacy-advanced-state.json"
+
+# A release built from a commit older than the accepted build reads as a
+# rollback, even when it is the newest commit that touched the CLI.
+older_cli_source=2222222222222222222222222222222222222222
+publish "20260903-015959" "$older_cli_source"
+reject "a build ID older than the accepted one" \
+  "release rollback detected" "$test_root/legacy-advanced-state.json"
 
 current_source=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 publish "20260904-010203-$current_source" "$current_source"
-IFHOST_CHANNEL_ALLOW_HTTP=1 OPENSSL_BIN="$openssl_bin" \
-  "$verifier" "$origin" "$test_root/release-signers" \
-  "$test_root/legacy-advanced-state.json" "$test_root/accepted-state.json" >/dev/null
+accept "the first commit-bound release" \
+  "$test_root/legacy-advanced-state.json" "$test_root/accepted-state.json"
 test "$(jq -r .build_id "$test_root/accepted-state.json")" = "20260904-010203-$current_source"
 
 # Once a commit-bound identity is accepted, the channel cannot fall back to
 # the legacy timestamp-only format even with a newer signed timestamp.
 legacy_fallback_source=cccccccccccccccccccccccccccccccccccccccc
 publish "20260905-000000" "$legacy_fallback_source"
-if IFHOST_CHANNEL_ALLOW_HTTP=1 OPENSSL_BIN="$openssl_bin" \
-  "$verifier" "$origin" "$test_root/release-signers" \
-  "$test_root/accepted-state.json" "$test_root/rejected-state.json" >/dev/null 2>&1; then
-  echo "channel verifier accepted a legacy identity after the commit-bound transition" >&2
-  exit 1
-fi
+reject "a legacy identity after the commit-bound transition" \
+  "a new release identity must include its full signed source commit" "$test_root/accepted-state.json"
 
 # A complete, correctly signed older snapshot must not pass once a newer state
 # has been accepted.
 rollback_source=dddddddddddddddddddddddddddddddddddddddd
 publish "20260902-010203-$rollback_source" "$rollback_source"
-if IFHOST_CHANNEL_ALLOW_HTTP=1 OPENSSL_BIN="$openssl_bin" \
-  "$verifier" "$origin" "$test_root/release-signers" \
-  "$test_root/accepted-state.json" "$test_root/rejected-state.json" >/dev/null 2>&1; then
-  echo "channel verifier accepted a whole-snapshot rollback" >&2
-  exit 1
-fi
+reject "a whole-snapshot rollback" "release rollback detected" "$test_root/accepted-state.json"
 
 # Even a correctly signed newer snapshot cannot claim a source commit that is
 # different from the commit carried in its release identity.
 identity_commit=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 claimed_commit=ffffffffffffffffffffffffffffffffffffffff
 publish "20260905-010203-$identity_commit" "$claimed_commit"
-if IFHOST_CHANNEL_ALLOW_HTTP=1 OPENSSL_BIN="$openssl_bin" \
-  "$verifier" "$origin" "$test_root/release-signers" \
-  "$test_root/accepted-state.json" "$test_root/rejected-state.json" >/dev/null 2>&1; then
-  echo "channel verifier accepted an unbound source commit" >&2
-  exit 1
-fi
+reject "an unbound source commit" \
+  "release identity is not bound to its signed source commit" "$test_root/accepted-state.json"
+
+# The signed record has exactly one shape: four identity fields, then both
+# names' digests in the publisher's order. Each case below is otherwise the
+# valid next release.
+next_source=1111111111111111111111111111111111111111
+next_build=20260905-020304-$next_source
+
+publish "$next_build" "$next_source"
+edit_release 'lines = [line for line in lines if not line.startswith("artifact.innstance_")]'
+reject "the pre-rename record with six digests" \
+  "signed release record has 10 fields; expected 16" "$test_root/accepted-state.json"
+
+publish "$next_build" "$next_source"
+edit_release 'lines.append("artifact.innstance_freebsd_amd64.tar.gz=" + "0" * 64)'
+reject "an extra artifact digest" \
+  "signed release record has 17 fields; expected 16" "$test_root/accepted-state.json"
+
+publish "$next_build" "$next_source"
+edit_release 'lines[6] = lines[6].replace("linux_amd64", "linux_riscv64")'
+reject "a digest for an unknown archive" \
+  "signed release line 7 is artifact.innstance_linux_riscv64.tar.gz; expected artifact.innstance_linux_amd64.tar.gz" \
+  "$test_root/accepted-state.json"
+
+publish "$next_build" "$next_source"
+edit_release 'lines[12] = lines[6]'
+reject "a repeated artifact digest" \
+  "signed release line 13 is artifact.innstance_linux_amd64.tar.gz; expected artifact.ifhost_linux_amd64.tar.gz" \
+  "$test_root/accepted-state.json"
+
+publish "$next_build" "$next_source"
+edit_release 'lines = lines[:4] + lines[10:] + lines[4:10]'
+reject "the two names' digests in the other order" \
+  "signed release line 5 is artifact.ifhost_darwin_amd64.tar.gz; expected artifact.innstance_darwin_amd64.tar.gz" \
+  "$test_root/accepted-state.json"
+
+# The update manifest must offer exactly the twelve signed archives, each
+# under the key its CLI looks up.
+publish "$next_build" "$next_source"
+write_manifest "$next_build" drop:innstance_linux_amd64
+sign_manifest
+reject "an update manifest without an innstance key" \
+  "missing ['innstance_linux_amd64'], unexpected none" "$test_root/accepted-state.json"
+
+write_manifest "$next_build" add:freebsd_amd64=ifhost_linux_amd64.tar.gz
+sign_manifest
+reject "an update manifest with an extra key" \
+  "missing none, unexpected ['freebsd_amd64']" "$test_root/accepted-state.json"
+
+write_manifest "$next_build" "url:innstance_linux_amd64=/dl/ifhost_linux_amd64.tar.gz?b=$next_build"
+sign_manifest
+reject "an innstance key that serves the ifhost archive" \
+  "/cli/version has an unexpected URL for innstance_linux_amd64" "$test_root/accepted-state.json"
+
+# Each archive holds one entry named for its family, and both names carry
+# the same binary.
+build_archives 0 innstance_linux_arm64.tar.gz:member=ifhost
+publish "$next_build" "$next_source"
+reject "an innstance archive holding the ifhost entry" \
+  "unexpected or non-regular entry in innstance_linux_arm64.tar.gz" "$test_root/accepted-state.json"
+
+build_archives 0 ifhost_windows_amd64.zip:member=innstance.exe
+publish "$next_build" "$next_source"
+reject "an ifhost archive holding the innstance entry" \
+  "unexpected files in ifhost_windows_amd64.zip" "$test_root/accepted-state.json"
+
+build_archives 0 ifhost_windows_arm64.zip:payload=-other
+publish "$next_build" "$next_source"
+reject "different binaries under the two names" \
+  "ifhost_windows_arm64.zip carries a different binary from the other windows_arm64 archive" \
+  "$test_root/accepted-state.json"
 
 # Digests are checked against the bytes served by the production-shaped URL,
 # not merely for agreement between the two signed metadata formats.
-next_source=1111111111111111111111111111111111111111
-publish "20260905-020304-$next_source" "$next_source"
-printf tampered >> "$channel/dl/ifhost_linux_amd64.tar.gz"
-if IFHOST_CHANNEL_ALLOW_HTTP=1 OPENSSL_BIN="$openssl_bin" \
-  "$verifier" "$origin" "$test_root/release-signers" \
-  "$test_root/accepted-state.json" "$test_root/rejected-state.json" >/dev/null 2>&1; then
-  echo "channel verifier accepted a tampered live archive" >&2
-  exit 1
-fi
+build_archives 0
+publish "$next_build" "$next_source"
+printf tampered >> "$channel/dl/innstance_linux_amd64.tar.gz"
+reject "a tampered live archive" \
+  "live archive digest mismatch for innstance_linux_amd64.tar.gz" "$test_root/accepted-state.json"
 
-echo "verified live-channel fixture, source binding, and rollback rejection"
+build_archives 0
+publish "$next_build" "$next_source"
+accept "the well-formed next release" "$test_root/accepted-state.json" "$test_root/next-state.json"
+test "$(jq -r .build_id "$test_root/next-state.json")" = "$next_build"
+
+# A stuck download is dropped and retried well before the five-minute
+# per-transfer limit, so twelve archives fit the audit's time budget even
+# when one of them stalls.
+mkdir -p "$channel/stall"
+: > "$channel/stall/ifhost_darwin_arm64.tar.gz"
+stall_started=$SECONDS
+accept "the release after a stalled download" \
+  "$test_root/next-state.json" "$test_root/stalled-state.json"
+test ! -e "$channel/stall/ifhost_darwin_arm64.tar.gz" || {
+  echo "the fixture never stalled a download" >&2
+  exit 1
+}
+stall_seconds=$((SECONDS - stall_started))
+test "$stall_seconds" -lt 120 || {
+  echo "the verifier waited ${stall_seconds}s on a stalled download" >&2
+  exit 1
+}
+same_state "$test_root/next-state.json" "$test_root/stalled-state.json"
+
+# With a clone of the source repository, the verifier also checks that the
+# build ID is the UTC committer time of the signed source commit, and that
+# the commit is on the deployed branch. The fixture commits are made at
+# 03:02:03 in UTC+2.
+source_repo=$test_root/source
+git init -q "$source_repo"
+empty_tree=$(git -C "$source_repo" mktree < /dev/null)
+
+# fixture_commit DATE MESSAGE [PARENT] prints a new empty-tree commit.
+fixture_commit() {
+  if test -n "${3:-}"; then
+    set -- "$1" "$2" -p "$3"
+  else
+    set -- "$1" "$2"
+  fi
+  GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid \
+    GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid \
+    GIT_AUTHOR_DATE=$1 GIT_COMMITTER_DATE=$1 \
+    git -C "$source_repo" commit-tree --no-gpg-sign "${@:3}" -m "$2" "$empty_tree"
+}
+
+source_commit=$(fixture_commit '2026-09-06T03:02:03+02:00' 'cli: a change')
+main_head=$(fixture_commit '2026-09-07T09:00:00+02:00' 'server: a later change' "$source_commit")
+git -C "$source_repo" update-ref refs/remotes/origin/main "$main_head"
+publish "20260906-010203-$source_commit" "$source_commit"
+IFHOST_CHANNEL_SOURCE_REPO=$source_repo accept "a build ID that is its source commit's time" \
+  "$test_root/next-state.json" "$test_root/source-state.json"
+grep -Fq "build_id is the commit time of source commit $source_commit, which is on origin/main ($main_head)" \
+  "$test_root/verifier.out"
+
+publish "20260906-010204-$source_commit" "$source_commit"
+IFHOST_CHANNEL_SOURCE_REPO=$source_repo reject "a build ID that is not its source commit's time" \
+  "is not the commit time of its signed source commit (20260906-010203 UTC)" "$test_root/next-state.json"
+
+# A commit's date is whatever its author wrote, and a clone holds every
+# fetched branch. A commit with the right time that main never reached does
+# not bind the release to anything that was deployed.
+side_commit=$(fixture_commit '2026-09-06T03:02:03+02:00' 'cli: a change on a side branch')
+git -C "$source_repo" update-ref refs/heads/side "$side_commit"
+publish "20260906-010203-$side_commit" "$side_commit"
+IFHOST_CHANNEL_SOURCE_REPO=$source_repo reject "a source commit that is not on main" \
+  "signed source commit $side_commit is not on origin/main in $source_repo" "$test_root/next-state.json"
+
+# The branch is origin/main unless the auditor names another.
+IFHOST_CHANNEL_SOURCE_REPO=$source_repo IFHOST_CHANNEL_SOURCE_REF=side \
+  accept "a source commit on the branch the auditor names" \
+  "$test_root/next-state.json" "$test_root/side-state.json"
+grep -Fq "which is on side ($side_commit)" "$test_root/verifier.out"
+
+IFHOST_CHANNEL_SOURCE_REPO=$source_repo IFHOST_CHANNEL_SOURCE_REF=refs/heads/missing \
+  reject "a deployed branch missing from the clone" \
+  "IFHOST_CHANNEL_SOURCE_REF refs/heads/missing is not a commit in $source_repo" \
+  "$test_root/next-state.json"
+
+unknown_source=3333333333333333333333333333333333333333
+publish "20260906-010203-$unknown_source" "$unknown_source"
+IFHOST_CHANNEL_SOURCE_REPO=$source_repo reject "a source commit missing from the clone" \
+  "signed source commit $unknown_source is not a commit in $source_repo" "$test_root/next-state.json"
+
+IFHOST_CHANNEL_SOURCE_REPO=$test_root/not-a-repository reject "a source clone that does not exist" \
+  "IFHOST_CHANNEL_SOURCE_REPO is not a git repository" "$test_root/next-state.json"
+
+echo "verified the twelve-archive channel fixture, repeated identities, source binding, and rollback rejection"

@@ -30,6 +30,22 @@ fi
 for file in "$allowed_signers" "$previous_state"; do
   test -f "$file" || { echo "missing verifier input: $file" >&2; exit 1; }
 done
+# Optional: a local clone of the private source repository, and the branch
+# releases are deployed from (origin/main unless IFHOST_CHANNEL_SOURCE_REF
+# names another).
+source_repo=${IFHOST_CHANNEL_SOURCE_REPO:-}
+source_ref=${IFHOST_CHANNEL_SOURCE_REF:-origin/main}
+if [[ -n $source_repo ]]; then
+  command -v git >/dev/null || { echo "missing required verifier: git" >&2; exit 1; }
+  git -C "$source_repo" rev-parse --git-dir >/dev/null 2>&1 || {
+    echo "IFHOST_CHANNEL_SOURCE_REPO is not a git repository: $source_repo" >&2
+    exit 1
+  }
+  source_head=$(git -C "$source_repo" rev-parse --verify --quiet --end-of-options "$source_ref^{commit}") || {
+    echo "IFHOST_CHANNEL_SOURCE_REF $source_ref is not a commit in $source_repo" >&2
+    exit 1
+  }
+fi
 
 openssl_bin=
 for candidate in "${OPENSSL_BIN:-}" openssl \
@@ -45,10 +61,14 @@ test -n "$openssl_bin" || { echo "OpenSSL 3 is required to verify /cli/version" 
 
 verify_root=$(mktemp -d)
 trap 'rm -rf "$verify_root"' EXIT HUP INT TERM
+# A transfer that falls below 1 KiB/s for 30 seconds is stalled: curl drops
+# it and retries, instead of letting one stuck archive out of twelve wait
+# out its five minutes three times and spend the audit's whole budget.
 curl_args=(
   --fail --silent --show-error
   --proto "$curl_proto" --tlsv1.2
   --connect-timeout 10 --max-time 300 --retry 2
+  --speed-limit 1024 --speed-time 30
 )
 fetch() {
   local url=$1 output=$2 limit=$3
@@ -90,21 +110,48 @@ release_sha256 = sys.argv[5]
     next_state_path,
 ) = map(pathlib.Path, sys.argv[6:])
 
-platforms = {
-    "darwin_amd64": "ifhost_darwin_amd64.tar.gz",
-    "darwin_arm64": "ifhost_darwin_arm64.tar.gz",
-    "linux_amd64": "ifhost_linux_amd64.tar.gz",
-    "linux_arm64": "ifhost_linux_arm64.tar.gz",
-    "windows_amd64": "ifhost_windows_amd64.zip",
-    "windows_arm64": "ifhost_windows_arm64.zip",
-}
-expected_release_keys = [
-    "build_id",
-    "source_repository",
-    "source_commit",
-    "source_workflow",
-    *[f"artifact.{name}" for name in platforms.values()],
+platforms = [
+    "darwin_amd64",
+    "darwin_arm64",
+    "linux_amd64",
+    "linux_arm64",
+    "windows_amd64",
+    "windows_arm64",
 ]
+# Every platform is one build published under two names. innstance is the
+# name the product ships under: the installers download it, and CLIs
+# installed as innstance update from its innstance_<os>_<arch> manifest key.
+# ifhost is the same build under the name CLIs installed before the rename
+# carry; they look up the bare <os>_<arch> key and cannot be taught
+# otherwise. Each archive holds one entry named for its family, and the two
+# entries for a platform must be the same bytes.
+families = ["innstance", "ifhost"]
+artifacts = []
+for family in families:
+    family_artifacts = []
+    for platform in platforms:
+        windows = platform.startswith("windows_")
+        family_artifacts.append(
+            {
+                "archive": f"{family}_{platform}" + (".zip" if windows else ".tar.gz"),
+                "platform": platform,
+                "manifest_key": platform if family == "ifhost" else f"{family}_{platform}",
+                "member": family + (".exe" if windows else ""),
+            }
+        )
+    # The publisher writes each family's digests in archive-name order,
+    # innstance first. The record is pinned exactly so that one release has
+    # exactly one signed encoding: a publisher change to its shape has to
+    # land together with a matching change here.
+    artifacts.extend(sorted(family_artifacts, key=lambda artifact: artifact["archive"]))
+identity_keys = ["build_id", "source_repository", "source_commit", "source_workflow"]
+expected_release_keys = [
+    *identity_keys,
+    *[f"artifact.{artifact['archive']}" for artifact in artifacts],
+]
+assert len(set(expected_release_keys)) == len(expected_release_keys)
+expected_downloads = {artifact["manifest_key"]: artifact for artifact in artifacts}
+assert len(expected_downloads) == len(artifacts)
 hex40 = re.compile(r"[0-9a-f]{40}")
 hex64 = re.compile(r"[0-9a-f]{64}")
 build_pattern = re.compile(r"(?P<stamp>\d{8}-\d{6})(?:-(?P<commit>[0-9a-f]{40}))?")
@@ -152,14 +199,19 @@ if not release_text.endswith("\n") or "\r" in release_text or "\0" in release_te
     fail("signed release record must be newline-terminated ASCII")
 lines = release_text[:-1].split("\n")
 if len(lines) != len(expected_release_keys):
-    fail("signed release record has an unexpected number of fields")
+    fail(
+        f"signed release record has {len(lines)} fields; expected {len(expected_release_keys)}: "
+        f"{len(identity_keys)} identity fields and {len(artifacts)} artifact digests"
+    )
 release = {}
-for expected_key, line in zip(expected_release_keys, lines):
+for number, (expected_key, line) in enumerate(zip(expected_release_keys, lines), start=1):
     if "=" not in line:
-        fail(f"malformed signed release line: {line}")
+        fail(f"malformed signed release line {number}: {line}")
     key, value = line.split("=", 1)
-    if key != expected_key or key in release or not value:
-        fail(f"unexpected or repeated signed release field: {key}")
+    if key != expected_key:
+        fail(f"signed release line {number} is {key}; expected {expected_key}")
+    if not value:
+        fail(f"signed release field {key} is empty")
     release[key] = value
 
 build_id = release["build_id"]
@@ -173,25 +225,32 @@ if release["source_workflow"] != "docker-build":
     fail("signed release names an unexpected source workflow")
 if build_commit is not None and build_commit != source_commit:
     fail("release identity is not bound to its signed source commit")
-for name in platforms.values():
-    if not hex64.fullmatch(release[f"artifact.{name}"]):
-        fail(f"signed release has an invalid digest for {name}")
+for artifact in artifacts:
+    if not hex64.fullmatch(release[f"artifact.{artifact['archive']}"]):
+        fail(f"signed release has an invalid digest for {artifact['archive']}")
 
 manifest = load_json(manifest_path)
 if not isinstance(manifest, dict) or set(manifest) != {"build_id", "downloads", "signature"}:
     fail("/cli/version has missing or unexpected fields")
 if manifest["build_id"] != build_id:
     fail("/cli/version build_id disagrees with the SSHSIG release record")
-if not isinstance(manifest["downloads"], dict) or set(manifest["downloads"]) != set(platforms):
-    fail("/cli/version has a missing or unexpected platform")
-for platform, name in platforms.items():
-    artifact = manifest["downloads"][platform]
-    if not isinstance(artifact, dict) or set(artifact) != {"url", "sha256"}:
-        fail(f"/cli/version has malformed metadata for {platform}")
-    if artifact["url"] != f"/dl/{name}?b={build_id}":
-        fail(f"/cli/version has an unexpected URL for {platform}")
-    if artifact["sha256"] != release[f"artifact.{name}"]:
-        fail(f"/cli/version digest disagrees for {platform}")
+if not isinstance(manifest["downloads"], dict):
+    fail("/cli/version downloads is not an object")
+missing_keys = sorted(set(expected_downloads) - set(manifest["downloads"]))
+unexpected_keys = sorted(set(manifest["downloads"]) - set(expected_downloads))
+if missing_keys or unexpected_keys:
+    fail(
+        "/cli/version download keys differ from the signed release: "
+        f"missing {missing_keys or 'none'}, unexpected {unexpected_keys or 'none'}"
+    )
+for key, artifact in expected_downloads.items():
+    download = manifest["downloads"][key]
+    if not isinstance(download, dict) or set(download) != {"url", "sha256"}:
+        fail(f"/cli/version has malformed metadata for {key}")
+    if download["url"] != f"/dl/{artifact['archive']}?b={build_id}":
+        fail(f"/cli/version has an unexpected URL for {key}")
+    if download["sha256"] != release[f"artifact.{artifact['archive']}"]:
+        fail(f"/cli/version digest disagrees for {key}")
 try:
     signature = base64.b64decode(manifest["signature"], validate=True)
 except (TypeError, ValueError) as exc:
@@ -199,11 +258,11 @@ except (TypeError, ValueError) as exc:
 if len(signature) != 64:
     fail("/cli/version has an invalid Ed25519 signature length")
 canonical_downloads = {
-    platform: {
-        "url": manifest["downloads"][platform]["url"],
-        "sha256": manifest["downloads"][platform]["sha256"],
+    key: {
+        "url": manifest["downloads"][key]["url"],
+        "sha256": manifest["downloads"][key]["sha256"],
     }
-    for platform in sorted(platforms)
+    for key in sorted(expected_downloads)
 }
 unsigned = {"build_id": build_id, "downloads": canonical_downloads}
 unsigned_path.write_text(
@@ -256,6 +315,13 @@ if previous_build_commit is not None and previous_build_commit != previous["sour
 if stamp < previous_stamp:
     fail("release rollback detected: build timestamp is older than the accepted state")
 if stamp == previous_stamp:
+    # A build ID repeats when the same commit is deployed again, and, once
+    # the CLI is built from the newest commit that changed it, whenever a
+    # server deploy leaves the CLI alone. Either way the deploy must
+    # republish the same release: one identity names one exact signed
+    # record, and any change under it is equivocation, however harmless the
+    # reason (a rebuilt archive with a new timestamp inside, or a deploy
+    # commit written into source_commit).
     if build_id != previous["build_id"]:
         fail("non-monotonic release identity: the timestamp was reused")
     if source_commit != previous["source_commit"] or release_sha256 != previous["release_sha256"]:
@@ -280,7 +346,15 @@ parsed_path.write_text(
         {
             "build_id": build_id,
             "source_commit": source_commit,
-            "artifacts": {name: release[f"artifact.{name}"] for name in platforms.values()},
+            "artifacts": [
+                {
+                    "archive": artifact["archive"],
+                    "digest": release[f"artifact.{artifact['archive']}"],
+                    "member": artifact["member"],
+                    "platform": artifact["platform"],
+                }
+                for artifact in artifacts
+            ],
         },
         separators=(",", ":"),
     ),
@@ -295,7 +369,49 @@ PY
 }
 
 build_id=$(jq -r .build_id "$verify_root/parsed.json")
-while IFS=$'\t' read -r name digest; do
+
+# The build ID's timestamp is the UTC committer time of the signed source
+# commit. The source repository is private, so a public audit cannot check
+# that; a maintainer with a clone can, by naming it here. A commit's date is
+# whatever its author wrote, and a clone also holds feature and dependency
+# branches, so the commit must be on the deployed branch as well: otherwise
+# the check would only prove that some commit with that date exists.
+if [[ -n $source_repo ]]; then
+  source_commit=$(jq -r .source_commit "$verify_root/parsed.json")
+  test "$(git -C "$source_repo" cat-file -t "$source_commit" 2>/dev/null)" = commit || {
+    echo "signed source commit $source_commit is not a commit in $source_repo" >&2
+    exit 1
+  }
+  git -C "$source_repo" merge-base --is-ancestor "$source_commit" "$source_head" || {
+    echo "signed source commit $source_commit is not on $source_ref in $source_repo" >&2
+    exit 1
+  }
+  git -C "$source_repo" cat-file commit "$source_commit" > "$verify_root/source-commit.txt"
+  python3 - "$verify_root/source-commit.txt" "$build_id" <<'PY'
+import datetime
+import pathlib
+import re
+import sys
+
+commit_path, build_id = pathlib.Path(sys.argv[1]), sys.argv[2]
+headers = commit_path.read_bytes().split(b"\n\n", 1)[0].decode("utf-8", "replace").split("\n")
+committers = [line for line in headers if line.startswith("committer ")]
+match = re.fullmatch(r"committer .* (\d+) [+-]\d{4}", committers[0]) if len(committers) == 1 else None
+if not match:
+    raise SystemExit("signed source commit has no readable committer time")
+committed = datetime.datetime.fromtimestamp(int(match.group(1)), datetime.timezone.utc)
+if build_id[:15] != committed.strftime("%Y%m%d-%H%M%S"):
+    raise SystemExit(
+        f"build_id {build_id} is not the commit time of its signed source commit "
+        f"({committed.strftime('%Y%m%d-%H%M%S')} UTC)"
+    )
+PY
+fi
+
+expected_archives=$(jq '.artifacts | length' "$verify_root/parsed.json")
+checked_archives=0
+mkdir "$verify_root/payloads"
+while IFS=$'\t' read -r name digest member platform; do
   fetch "$origin/dl/$name?b=$build_id" "$verify_root/$name" 67108864
   actual=$(sha256_file "$verify_root/$name")
   test "$actual" = "$digest" || { echo "live archive digest mismatch for $name" >&2; exit 1; }
@@ -306,21 +422,24 @@ while IFS=$'\t' read -r name digest; do
     exit 1
   }
 
-  python3 - "$verify_root/$name" "$name" <<'PY'
+  python3 - "$verify_root/$name" "$name" "$member" > "$verify_root/$name.payload" <<'PY'
+import hashlib
 import stat
 import sys
 import tarfile
 import zipfile
 
-path, archive_name = sys.argv[1:]
-expected = "ifhost.exe" if archive_name.endswith(".zip") else "ifhost"
+path, archive_name, expected = sys.argv[1:]
 
 def verify_payload(stream, expected_size, archive_name):
     total = 0
+    digest = hashlib.sha256()
     while chunk := stream.read(1024 * 1024):
         total += len(chunk)
+        digest.update(chunk)
     if total != expected_size:
         raise SystemExit(f"truncated release entry in {archive_name}")
+    print(digest.hexdigest())
 if archive_name.endswith(".zip"):
     with zipfile.ZipFile(path) as archive:
         entries = archive.infolist()
@@ -348,7 +467,29 @@ else:
         with extracted:
             verify_payload(extracted, entry.size, archive_name)
 PY
-done < <(jq -r '.artifacts | to_entries[] | [.key, .value] | @tsv' "$verify_root/parsed.json")
+
+  # Both names carry one build. An innstance and an ifhost CLI that report
+  # the same build ID must be the same program, so the entries have to match
+  # byte for byte, not merely both be well formed.
+  payload=$(cat "$verify_root/$name.payload")
+  [[ $payload =~ ^[0-9a-f]{64}$ ]] || { echo "could not digest the entry in $name" >&2; exit 1; }
+  if test -f "$verify_root/payloads/$platform"; then
+    test "$(cat "$verify_root/payloads/$platform")" = "$payload" || {
+      echo "$name carries a different binary from the other $platform archive" >&2
+      exit 1
+    }
+  else
+    printf '%s\n' "$payload" > "$verify_root/payloads/$platform"
+  fi
+  checked_archives=$((checked_archives + 1))
+done < <(jq -r '.artifacts[] | [.archive, .digest, .member, .platform] | @tsv' "$verify_root/parsed.json")
+test "$checked_archives" -eq "$expected_archives" || {
+  echo "checked $checked_archives of $expected_archives signed archives" >&2
+  exit 1
+}
 
 cp "$verify_root/next-state.json" "$next_state"
-echo "verified server-signed CLI channel $build_id"
+echo "verified server-signed CLI channel $build_id ($checked_archives archives)"
+if [[ -n $source_repo ]]; then
+  echo "build_id is the commit time of source commit $source_commit, which is on $source_ref ($source_head) in $source_repo"
+fi

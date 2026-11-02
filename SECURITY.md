@@ -13,11 +13,13 @@ messages with the same anchor:
   field omitted for installed CLI updates.
 
 The public key is pinned in `release-signers`. The audit verifies both
-signatures independently, then requires their build IDs, platform set, URLs,
-and SHA-256 digests to agree. It fetches the six archives and sidecars through
-the production `/dl` routes, verifies the bytes, and rejects links, devices,
-extra members, empty payloads, and oversized payloads. Downloaded programs are
-never executed by the audit.
+signatures independently, then requires their build IDs, download keys, URLs,
+and SHA-256 digests to agree. It fetches the twelve archives (six platforms,
+each under the `innstance` and `ifhost` names) and their sidecars through the
+production `/dl` routes, verifies the bytes, and rejects links, devices, extra
+or misnamed members, empty payloads, and oversized payloads. The two archives
+for a platform must carry the same binary. Downloaded programs are never
+executed by the audit.
 
 There is no KMS signing stage, immutable Git artifact commit, `latest.json`, or
 `gh-pages` metadata publisher in this trust model. Whoever controls the
@@ -34,7 +36,7 @@ Every successful scheduled or manually dispatched live audit uploads its
 accepted state, and the next run restores the state from the latest preceding
 successful live run. If such a run exists but its artifact is missing or
 expired, the workflow fails closed instead of falling back to the repository
-bootstrap.
+checkpoint, however recently that checkpoint was committed.
 
 The state binds four values: schema version, release build ID, signed source
 commit, and SHA-256 of the complete SSHSIG-covered release record. The verifier
@@ -43,7 +45,9 @@ enforces these transitions:
 1. The UTC timestamp in the build ID may not decrease.
 2. Reusing a timestamp with another identity is rejected.
 3. Reusing an identity is allowed only when the source commit and complete
-   signed record digest are unchanged.
+   signed record digest are unchanged. Any deploy that repeats a build ID,
+   including one that does not rebuild the CLI, must repeat the record
+   exactly.
 4. Once an accepted identity includes the full 40-character signed source
    commit as its suffix, every newer identity must include that suffix.
 
@@ -52,8 +56,10 @@ checking only the internally consistent current response would not.
 
 The Actions artifact is a witness outside the release server, not a permanent
 transparency log. Repository administrators and GitHub remain trusted, and an
-audit outage longer than artifact retention fails closed until an authorized
-review updates the committed bootstrap checkpoint.
+audit outage longer than artifact retention fails closed. Restarting it is an
+authorized, reviewed change to the audit workflow, made against the newest
+state an audit accepted; the workflow never re-anchors itself on the committed
+checkpoint, because that file can be older than the expired witness.
 
 ## Changes to trust material
 
