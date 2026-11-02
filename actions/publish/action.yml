@@ -1,0 +1,136 @@
+name: Innstance publish
+description: >-
+  Install the verified Innstance CLI, then publish files or deploy an app from
+  this job, and optionally attach your own domain.
+
+inputs:
+  mode:
+    description: >-
+      publish: static files, no machine. deploy: push a directory to an app's
+      runner VM and start it. install: only put the verified CLI on PATH for
+      later steps.
+    required: false
+    default: publish
+  token:
+    description: >-
+      Innstance API token, from a secret. Create one with
+      `innstance tokens create --name github-actions --expires-in 90`.
+      Not needed for mode: install.
+    required: false
+    default: ''
+  name:
+    description: Site name (publish) or app name (deploy). The public address is built from it.
+    required: false
+    default: ''
+  path:
+    description: >-
+      publish: files, globs or a folder, one per line, in the order the page
+      should show them. deploy: the directory to push (default: the working
+      directory).
+    required: false
+    default: ''
+  domain:
+    description: >-
+      Custom hostname to attach, such as www.example.com. The first run prints
+      the DNS records to create; a run after they resolve finishes the setup.
+    required: false
+    default: ''
+  working-directory:
+    description: Directory that path and impossible.toml are relative to.
+    required: false
+    default: '.'
+  start-command:
+    description: >-
+      deploy: command that starts the app, run with sh in remote-dir. The
+      process this action started on the previous run is stopped first.
+    required: false
+    default: ''
+  remote-dir:
+    description: 'deploy: absolute directory on the VM that path is pushed to.'
+    required: false
+    default: /app
+  port:
+    description: >-
+      deploy: port the app listens on. Overrides impossible.toml. Without
+      either, an app that exists keeps its port and a new app gets 8080.
+    required: false
+    default: ''
+  packages:
+    description: 'deploy: Debian packages to install on the VM before starting, separated by spaces or lines.'
+    required: false
+    default: ''
+  health-path:
+    description: 'deploy: path that must answer 2xx or 3xx before the step succeeds.'
+    required: false
+    default: /
+  wait-seconds:
+    description: 'deploy: how long to wait for health-path after starting; 0 skips the check.'
+    required: false
+    default: '120'
+  show-app-log:
+    description: >-
+      deploy: when health-path never answers, print the end of the app's log
+      in the job log. Off by default: the job log of a public repository is
+      public, and an app's log can hold secrets.
+    required: false
+    default: 'false'
+  api-url:
+    description: >-
+      Control-plane origin, for staging or self-hosted installs. Releases are
+      fetched from it and must still be signed by the key in release-signers.
+    required: false
+    default: ''
+  cli-build-id:
+    description: >-
+      Refuse to run unless the live signed release is exactly this build ID
+      (for example 20261012-080924).
+    required: false
+    default: ''
+
+outputs:
+  url:
+    description: Address the site or app answers at.
+    value: ${{ steps.run.outputs.url }}
+  domain-url:
+    description: https:// address of the custom domain, when one was given.
+    value: ${{ steps.run.outputs.domain-url }}
+  domain-status:
+    description: active, pending_certificate or pending_verification (DNS records still to create).
+    value: ${{ steps.run.outputs.domain-status }}
+  cli-build-id:
+    description: Build ID of the verified CLI this run used.
+    value: ${{ steps.install.outputs.cli-build-id }}
+
+runs:
+  using: composite
+  steps:
+    # Inputs reach the scripts only through env, never through expressions
+    # inside run, so no input value can become shell syntax.
+    - name: Install the verified Innstance CLI
+      id: install
+      shell: bash
+      env:
+        INNSTANCE_ACTION_API_URL: ${{ inputs.api-url }}
+        INNSTANCE_ACTION_CLI_BUILD_ID: ${{ inputs.cli-build-id }}
+      run: bash "$GITHUB_ACTION_PATH/install-cli.sh" "${INNSTANCE_ACTION_API_URL:-https://innstance.impossibuild.ai}" "$GITHUB_ACTION_PATH/../../release-signers" "$GITHUB_ACTION_PATH/../../channel-state.json" "$RUNNER_TEMP/innstance-cli" "$INNSTANCE_ACTION_CLI_BUILD_ID"
+
+    - name: Publish or deploy
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        IMPOSSIBLE_API_TOKEN: ${{ inputs.token }}
+        INNSTANCE_CLI: ${{ steps.install.outputs.cli-path }}
+        INNSTANCE_ACTION_MODE: ${{ inputs.mode }}
+        INNSTANCE_ACTION_NAME: ${{ inputs.name }}
+        INNSTANCE_ACTION_PATH: ${{ inputs.path }}
+        INNSTANCE_ACTION_DOMAIN: ${{ inputs.domain }}
+        INNSTANCE_ACTION_START_COMMAND: ${{ inputs.start-command }}
+        INNSTANCE_ACTION_REMOTE_DIR: ${{ inputs.remote-dir }}
+        INNSTANCE_ACTION_PORT: ${{ inputs.port }}
+        INNSTANCE_ACTION_PACKAGES: ${{ inputs.packages }}
+        INNSTANCE_ACTION_HEALTH_PATH: ${{ inputs.health-path }}
+        INNSTANCE_ACTION_WAIT_SECONDS: ${{ inputs.wait-seconds }}
+        INNSTANCE_ACTION_SHOW_APP_LOG: ${{ inputs.show-app-log }}
+        INNSTANCE_ACTION_API_URL: ${{ inputs.api-url }}
+      run: bash "$GITHUB_ACTION_PATH/publish.sh"

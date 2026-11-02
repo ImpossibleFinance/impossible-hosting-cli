@@ -1,0 +1,94 @@
+name: publish-action
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-action-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install a pinned actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location \
+            --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 120 \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}" \
+            --output "$RUNNER_TEMP/$archive"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/actionlint" actionlint
+          echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
+      - name: Lint the workflows, the composite action and its scripts
+        run: |
+          set -euo pipefail
+          command -v shellcheck >/dev/null || sudo apt-get install -y --no-install-recommends shellcheck
+          # actionlint also checks every `uses: ./actions/publish` against
+          # the inputs action.yml declares, and shellchecks workflow run blocks.
+          actionlint -color
+          shellcheck actions/publish/*.sh scripts/*.sh scripts/testdata/*.sh
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Exercise the action against a signed fixture channel
+        run: scripts/test-publish-action.sh
+
+  live-install:
+    # The live release, installed through the action the way a user's
+    # workflow installs it. Only public release files are fetched and no
+    # token is involved; it stays off pull requests so a release-origin
+    # outage cannot block an unrelated change.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the verified CLI through the action
+        id: cli
+        uses: ./actions/publish
+        with:
+          mode: install
+      - name: The verified build is on PATH for later steps
+        env:
+          BUILD_ID: ${{ steps.cli.outputs.cli-build-id }}
+        run: |
+          set -euo pipefail
+          test -n "$BUILD_ID"
+          test "$(innstance --version)" = "innstance version $BUILD_ID"
+          # On Linux the CLI names itself after the file a link resolves to,
+          # so ifhost prints "innstance version ..." there. What matters is
+          # that ifhost is a link to the same verified build.
+          test "$(readlink "$(command -v ifhost)")" = innstance
+          ifhost_version=$(ifhost --version 2>/dev/null)
+          test "${ifhost_version##* }" = "$BUILD_ID"

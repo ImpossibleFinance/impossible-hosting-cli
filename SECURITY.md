@@ -61,10 +61,43 @@ authorized, reviewed change to the audit workflow, made against the newest
 state an audit accepted; the workflow never re-anchors itself on the committed
 checkpoint, because that file can be older than the expired witness.
 
+## The publish action
+
+`actions/publish/install-cli.sh` repeats the installer's checks inside
+GitHub Actions. It verifies the SSHSIG against `release-signers` at the
+commit the workflow pinned, not against a key fetched from the release
+origin. Then it checks the archive against the signed SHA-256 and requires
+exactly one regular file in the archive. It runs the binary only after all
+of that passes.
+
+It also refuses a signed release older than the checkpoint in
+`channel-state.json` at the same commit, by the audit's rules: a later build
+time, and one release per build time. That is a floor, not the newest
+release: between the checkpoint and the live release an origin could still
+serve an older signed build. A workflow that must run one exact build sets
+`cli-build-id`.
+
+The account token goes only to the publish or deploy step, and later steps
+never receive it. It must arrive as a GitHub secret, or be masked in the
+step that produced it: the runner prints a step's inputs in the log before
+the action runs, so the action's own mask covers only what follows.
+
+The install script is a third reader of the signed record, after /install
+and `scripts/verify-channel.sh`. Like /install it holds only the fields it
+uses to a strict format, so a record that grows new fields still installs.
+The scheduled `live-install` job installs the live release through it, so
+a release record it can no longer read turns that job red before users
+notice.
+
+A workflow pinned to a commit keeps that commit's key. After a key
+rotation, those workflows fail closed until they move to a commit that
+carries the new key.
+
 ## Changes to trust material
 
-Changes to `release-signers`, `channel-state.json`, the verifier, or the audit
-workflow require CODEOWNER review and protected-branch enforcement. Rotating
+Changes to `release-signers`, `channel-state.json`, the verifier, the
+publish action's installer, or the audit workflow require CODEOWNER review
+and protected-branch enforcement. Rotating
 the signing key requires first shipping clients and installers that trust the
 new key, then deliberately replacing this repository's anchor. Never accept an
 unsigned transition or reset the checkpoint merely to make a rollback alarm
