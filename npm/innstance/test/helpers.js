@@ -167,6 +167,16 @@ async function startFakeServer(overrides = {}) {
       }
       return json(res, 200, reply, { 'Mcp-Session-Id': 'sess-1' });
     }
+    // Redirects for the skill download: same host (a renamed repository),
+    // another host, and a loop.
+    const redirect = /^\/(moved|away|loop)\/(.+)$/.exec(url.pathname);
+    if (req.method === 'GET' && redirect) {
+      const [, kind, file] = redirect;
+      const port = server.address().port;
+      const to = { moved: `/skill/${file}`, away: `http://localhost:${port}/skill/${file}`, loop: url.pathname }[kind];
+      res.writeHead(301, { Location: to });
+      return res.end();
+    }
     if (req.method === 'GET' && url.pathname.startsWith('/skill/')) {
       const file = state.skillFiles[url.pathname.slice('/skill/'.length)];
       if (!file) return json(res, 404, { error: 'not found' });

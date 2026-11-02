@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const { PIN, compareVersions, fetchSkill, installSkill, readInstalled, removeSkill, validatePin } = require('../lib/skill');
+const { MARKER, PIN, compareVersions, fetchSkill, installSkill, readInstalled, removeSkill, validatePin } = require('../lib/skill');
 const { mode, sha256, startFakeServer, tempHome, testSkill } = require('./helpers');
 
 test('the shipped pin is a well-formed, immutable skill revision', () => {
@@ -59,6 +59,12 @@ test('fetchSkill installs nothing unless every byte matches the pin', async (t) 
     server.state.skillFiles = saved;
   }
 
+  // A repository rename answers with a redirect on the same host; the pinned
+  // hashes still decide. A redirect anywhere else is refused.
+  assert.equal((await fetchSkill({ pin: server.state.skillPin, baseURL: server.origin + '/moved' })).version, server.state.skillPin.version);
+  await assert.rejects(fetchSkill({ pin: server.state.skillPin, baseURL: server.origin + '/away' }), /redirected to another host/);
+  await assert.rejects(fetchSkill({ pin: server.state.skillPin, baseURL: server.origin + '/loop' }), /HTTP 301/);
+
   // A manifest whose bytes are pinned but whose version disagrees with the pin.
   const other = testSkill('20260101-1');
   server.state.skillFiles = other.files;
@@ -111,7 +117,27 @@ test('installSkill installs, updates, keeps newer and refuses what is not ours',
         if (process.platform !== 'win32' && c.status !== 'current') assert.equal(mode(path.join(dir, name)), 0o600);
       }
     }
+    // Only a directory this package wrote is marked as its own.
+    assert.equal(fs.existsSync(path.join(dir, MARKER)), ['installed', 'updated'].includes(c.status), `${c.name}: marker`);
+    assert.deepEqual(
+      fs.readdirSync(root).filter((n) => n !== 'innstance'),
+      [],
+      `${c.name}: no staging directory is left behind`,
+    );
   }
+});
+
+test('an interrupted first install does not block the next one', async (t) => {
+  const root = path.join(tempHome(t), 'skills');
+  // What a run killed mid-install leaves: a staging directory, never a
+  // half-written skills/innstance.
+  const leftover = path.join(root, '.innstance.npx-staging-123-abcd');
+  fs.mkdirSync(leftover, { recursive: true });
+  fs.writeFileSync(path.join(leftover, 'SKILL.md'), 'partial');
+  const bundle = { version: '20260924-1', files: testSkill().files };
+  assert.equal((await installSkill(root, bundle)).status, 'installed');
+  assert.deepEqual(fs.readdirSync(root), ['innstance']);
+  assert.equal(readInstalled(path.join(root, 'innstance')).version, '20260924-1');
 });
 
 test('installSkill --force replaces a directory that is not an Innstance skill', async (t) => {
@@ -126,19 +152,58 @@ test('installSkill --force replaces a directory that is not an Innstance skill',
   assert.equal(fs.readFileSync(path.join(dir, 'notes.txt'), 'utf8'), 'keep');
 });
 
-test('removeSkill deletes only the files it installs', (t) => {
-  const root = path.join(tempHome(t), 'skills');
-  const dir = path.join(root, 'innstance');
-  assert.equal(removeSkill(root).status, 'absent');
-  writeSkill(dir, testSkill().files);
-  assert.equal(removeSkill(root).status, 'removed');
-  assert.equal(fs.existsSync(dir), false);
-  writeSkill(dir, testSkill().files);
-  fs.writeFileSync(path.join(dir, 'mine.md'), 'x');
-  assert.equal(removeSkill(root).status, 'removed');
-  assert.deepEqual(fs.readdirSync(dir), ['mine.md']);
-  fs.writeFileSync(path.join(dir, 'manifest.json'), '{"name": "not ours"}');
-  assert.equal(removeSkill(root).status, 'skipped');
+test('removeSkill deletes only what this package installed and nobody changed', async (t) => {
+  const bundle = { version: '20260924-1', files: testSkill().files };
+  const cases = [
+    { name: 'nothing there', prepare: async () => {}, status: 'absent' },
+    { name: 'installed by setup', prepare: (root) => installSkill(root, bundle), status: 'removed', left: null },
+    {
+      name: 'installed, plus a file of the person\'s own',
+      prepare: async (root) => {
+        await installSkill(root, bundle);
+        fs.writeFileSync(path.join(root, 'innstance', 'mine.md'), 'x');
+      },
+      status: 'removed',
+      left: ['mine.md'],
+    },
+    { name: 'written by the Go CLI (no marker)', prepare: async (root) => writeSkill(path.join(root, 'innstance'), bundle.files), status: 'skipped', detail: /not installed by npx innstance/ },
+    {
+      name: 'edited after install',
+      prepare: async (root) => {
+        await installSkill(root, bundle);
+        fs.writeFileSync(path.join(root, 'innstance', 'RUNBOOK.md'), 'my notes');
+      },
+      status: 'skipped',
+      detail: /RUNBOOK\.md changed/,
+    },
+    {
+      name: 'a symlink to a checkout of the skill repository',
+      skip: process.platform === 'win32',
+      prepare: async (root) => {
+        const checkout = path.join(root, '..', 'checkout');
+        await installSkill(checkout, bundle);
+        fs.mkdirSync(root, { recursive: true });
+        fs.symlinkSync(path.join(checkout, 'innstance'), path.join(root, 'innstance'));
+      },
+      status: 'skipped',
+      detail: /symbolic link/,
+    },
+  ];
+  for (const c of cases) {
+    if (c.skip) continue;
+    const root = path.join(tempHome(t), 'skills');
+    await c.prepare(root);
+    const before = fs.existsSync(path.join(root, 'innstance')) ? fs.readdirSync(path.join(root, 'innstance')).sort() : null;
+    const got = removeSkill(root);
+    assert.equal(got.status, c.status, c.name);
+    if (c.detail) assert.match(got.detail, c.detail, c.name);
+    const dir = path.join(root, 'innstance');
+    if (c.status === 'removed') {
+      assert.deepEqual(fs.existsSync(dir) ? fs.readdirSync(dir) : null, c.left, c.name);
+    } else if (before) {
+      assert.deepEqual(fs.readdirSync(dir).sort(), before, `${c.name}: nothing was deleted`);
+    }
+  }
 });
 
 function writeSkill(dir, files) {

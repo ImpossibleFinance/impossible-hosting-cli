@@ -15,8 +15,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { request } = require('../lib/http');
-const { SKILL_FILES, fetchSkill, officialBaseURL, sha256, validatePin } = require('../lib/skill');
+const { SKILL_FILES, downloadSkillFile, fetchSkill, officialBaseURL, sha256, validatePin } = require('../lib/skill');
 
 const PIN_FILE = path.join(__dirname, '..', 'lib', 'skill-pin.json');
 
@@ -33,7 +32,7 @@ async function repin(commit) {
   const base = officialBaseURL(pin);
   const files = {};
   for (const name of SKILL_FILES) {
-    const res = await request('GET', `${base}/${name}`, { timeoutMs: 20000, maxBytes: 2 << 20 });
+    const res = await downloadSkillFile(`${base}/${name}`);
     if (res.status !== 200) throw new Error(`${name}: HTTP ${res.status}`);
     files[name] = res.body;
     pin.files[name] = sha256(res.body);
