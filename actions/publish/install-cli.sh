@@ -98,23 +98,30 @@ if ! ssh-keygen -Y verify -f "$allowed_signers" -I ifhost -n ifhost-release \
 fi
 
 # The signature covers these bytes, so everything below reads only the signed
-# record. Parse it strictly anyway: one key=value per line, no repeated keys,
-# so a record can never mean two different things to two readers.
+# record. Every line is a key=value pair of printable ASCII, and every field
+# this script reads must appear exactly once in its expected format, so the
+# record cannot mean two different things to two readers. Fields it does not
+# read are left alone, as /install leaves them: the record grows new ones,
+# and a workflow pinned to an older commit of this action must keep
+# installing when it does.
 record=$work/release.txt
 [[ -s $record && $(tail -c 1 "$record" | wc -l | tr -d ' ') -eq 1 ]] ||
   fail "the signed release record must end with a newline"
 if LC_ALL=C grep -q '[^[:print:]]' "$record"; then
   fail "the signed release record must be printable ASCII"
 fi
-if LC_ALL=C grep -Evq '^[A-Za-z0-9_.-]+=[A-Za-z0-9_./@:-]+$' "$record"; then
+if LC_ALL=C grep -Evq '^[A-Za-z0-9_.-]+=' "$record"; then
   fail "the signed release record has a malformed line"
 fi
-if [[ -n $(cut -d= -f1 "$record" | sort | uniq -d) ]]; then
-  fail "the signed release record repeats a field"
-fi
+field_count() {
+  awk -F= -v name="$1" '$1 == name { n++ } END { print n + 0 }' "$record"
+}
 signed_value() {
   awk -F= -v name="$1" '$1 == name { sub(/^[^=]*=/, ""); print }' "$record"
 }
+for field in build_id source_repository source_commit; do
+  [[ $(field_count "$field") -eq 1 ]] || fail "the signed release record must name $field exactly once"
+done
 
 build_id=$(signed_value build_id)
 source_repository=$(signed_value source_repository)
@@ -137,12 +144,13 @@ fi
 # beside it, exactly as /install lays it out.
 archive=innstance_${os}_${arch}.tar.gz
 member=innstance
-digest=$(signed_value "artifact.$archive")
-if [[ -z $digest ]]; then
+if [[ $(field_count "artifact.$archive") -eq 0 ]]; then
   archive=ifhost_${os}_${arch}.tar.gz
   member=ifhost
-  digest=$(signed_value "artifact.$archive")
 fi
+[[ $(field_count "artifact.$archive") -le 1 ]] ||
+  fail "the signed release record names artifact.$archive more than once"
+digest=$(signed_value "artifact.$archive")
 [[ $digest =~ ^[0-9a-f]{64}$ ]] || fail "the signed release has no valid digest for $os/$arch"
 
 fetch "$origin/dl/$archive?b=$build_id" "$work/$archive" 67108864

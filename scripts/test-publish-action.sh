@@ -209,8 +209,23 @@ refused "refuses a build ID whose commit disagrees with source_commit" "$test_ro
 publish_release "$build" "$commit" "innstance ifhost" "build_id=$build"
 refused "refuses a signed record that repeats a field" "$test_root/repeat"
 
-publish_release "$build" "$commit" "innstance ifhost" "note=has space"
+digest_line=$(grep "^artifact.innstance_${os}_$arch.tar.gz=" "$channel/dl/release.txt")
+publish_release "$build" "$commit" "innstance ifhost" "$digest_line"
+refused "refuses a signed record that repeats this runner's digest" "$test_root/repeat-digest"
+
+publish_release "$build" "$commit" "innstance ifhost" "not a field"
 refused "refuses a signed record with a malformed line" "$test_root/malformed"
+
+# The record grows: a field this installer does not read, in a format it
+# would not accept for one it does, even twice, must not stop an install.
+publish_release "$build" "$commit" "innstance ifhost" \
+  "$(printf 'signed_at=2026-11-02T10:00:00+00:00\nnotes=built by ci; see =docs\nnotes=again')"
+if run_install "$test_root/grown" > "$test_root/out" 2>&1 &&
+   grep -Fxq "cli-build-id=$build" "$test_root/grown.output"; then
+  ok "accepts a signed record with fields it does not read"
+else
+  not_ok "accepts a signed record with fields it does not read"
+fi
 
 publish_release "$build" "$commit" "innstance ifhost"
 cp "$channel/dl/innstance_${os}_$arch.tar.gz" "$test_root/good-archive"
