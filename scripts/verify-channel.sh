@@ -54,10 +54,14 @@ test -n "$openssl_bin" || { echo "OpenSSL 3 is required to verify /cli/version" 
 
 verify_root=$(mktemp -d)
 trap 'rm -rf "$verify_root"' EXIT HUP INT TERM
+# A transfer that falls below 1 KiB/s for 30 seconds is stalled: curl drops
+# it and retries, instead of letting one stuck archive out of twelve wait
+# out its five minutes three times and spend the audit's whole budget.
 curl_args=(
   --fail --silent --show-error
   --proto "$curl_proto" --tlsv1.2
   --connect-timeout 10 --max-time 300 --retry 2
+  --speed-limit 1024 --speed-time 30
 )
 fetch() {
   local url=$1 output=$2 limit=$3

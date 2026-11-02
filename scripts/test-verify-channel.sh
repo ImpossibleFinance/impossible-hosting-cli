@@ -275,6 +275,7 @@ import http.server
 import os
 import pathlib
 import sys
+import time
 
 root, port_path = sys.argv[1:]
 os.chdir(root)
@@ -283,6 +284,24 @@ os.chdir(root)
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, _format, *_args):
         pass
+
+    def do_GET(self):
+        # An archive named in stall/ is served once as a stuck download: the
+        # headers and a few bytes, then nothing for longer than the
+        # verifier's per-transfer limit. The marker is consumed, so a retry
+        # gets the whole file.
+        name = self.path.split("?", 1)[0].rsplit("/", 1)[-1]
+        try:
+            pathlib.Path("stall", name).unlink()
+        except OSError:
+            return super().do_GET()
+        body = pathlib.Path("dl", name).read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body[:16])
+        self.wfile.flush()
+        time.sleep(600)
 
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
@@ -505,6 +524,25 @@ build_archives 0
 publish "$next_build" "$next_source"
 accept "the well-formed next release" "$test_root/accepted-state.json" "$test_root/next-state.json"
 test "$(jq -r .build_id "$test_root/next-state.json")" = "$next_build"
+
+# A stuck download is dropped and retried well before the five-minute
+# per-transfer limit, so twelve archives fit the audit's time budget even
+# when one of them stalls.
+mkdir -p "$channel/stall"
+: > "$channel/stall/ifhost_darwin_arm64.tar.gz"
+stall_started=$SECONDS
+accept "the release after a stalled download" \
+  "$test_root/next-state.json" "$test_root/stalled-state.json"
+test ! -e "$channel/stall/ifhost_darwin_arm64.tar.gz" || {
+  echo "the fixture never stalled a download" >&2
+  exit 1
+}
+stall_seconds=$((SECONDS - stall_started))
+test "$stall_seconds" -lt 120 || {
+  echo "the verifier waited ${stall_seconds}s on a stalled download" >&2
+  exit 1
+}
+same_state "$test_root/next-state.json" "$test_root/stalled-state.json"
 
 # With a clone of the source repository, the verifier also checks that the
 # build ID is the UTC committer time of the signed source commit. The
