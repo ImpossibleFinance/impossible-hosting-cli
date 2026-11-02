@@ -526,12 +526,23 @@ else
 fi
 
 dir=$(new_workdir)
-CLI_CALLED=1 rejected "deploy: fails with the app log when health-path never answers" "$dir" \
+CLI_CALLED=1 rejected "deploy: fails when health-path never answers" "$dir" \
   INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=probe INNSTANCE_ACTION_START_COMMAND='./serve' \
   INNSTANCE_ACTION_ALLOW_HTTP=1 FAKE_APP_URL="$origin" INNSTANCE_ACTION_HEALTH_PATH=/missing \
   INNSTANCE_ACTION_WAIT_SECONDS=1
+if ! grep -Fq 'tail' "$dir/log" &&
+   grep -Fq 'Read the app log with: innstance machines exec --app probe -- tail -n 50 /tmp/innstance-action.log' "$test_root/out"; then
+  ok "deploy: a failed health check keeps the app log out of the job log, and says how to read it"
+else
+  not_ok "deploy: a failed health check keeps the app log out of the job log, and says how to read it"
+fi
+dir=$(new_workdir)
+CLI_CALLED=1 rejected "deploy: fails with the app log when asked for it" "$dir" \
+  INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=probe INNSTANCE_ACTION_START_COMMAND='./serve' \
+  INNSTANCE_ACTION_ALLOW_HTTP=1 FAKE_APP_URL="$origin" INNSTANCE_ACTION_HEALTH_PATH=/missing \
+  INNSTANCE_ACTION_WAIT_SECONDS=1 INNSTANCE_ACTION_SHOW_APP_LOG=true
 grep -Fxq 'machines exec --app probe -- tail -n 50 /tmp/innstance-action.log' "$dir/log" ||
-  not_ok "a failed health check fetches the app log"
+  not_ok "show-app-log: true fetches the app log after a failed health check"
 
 dir=$(new_workdir)
 echo x > "$dir/file"
@@ -548,6 +559,8 @@ rejected "deploy: rejects a package that reads as a flag" "$dir" INNSTANCE_ACTIO
   INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_PACKAGES='nodejs --allow-unauthenticated'
 rejected "deploy: rejects a health-path without a leading slash" "$dir" INNSTANCE_ACTION_MODE=deploy \
   INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_HEALTH_PATH=health
+rejected "deploy: rejects a show-app-log that is not true or false" "$dir" INNSTANCE_ACTION_MODE=deploy \
+  INNSTANCE_ACTION_NAME=x INNSTANCE_ACTION_SHOW_APP_LOG=yes
 rejected "deploy: rejects an app name that is not one" "$dir" INNSTANCE_ACTION_MODE=deploy \
   'INNSTANCE_ACTION_NAME=My"App'
 

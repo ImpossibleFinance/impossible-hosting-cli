@@ -21,6 +21,7 @@ port=${INNSTANCE_ACTION_PORT:-}
 packages_input=${INNSTANCE_ACTION_PACKAGES:-}
 health_path=${INNSTANCE_ACTION_HEALTH_PATH:-/}
 wait_seconds=${INNSTANCE_ACTION_WAIT_SECONDS:-120}
+show_app_log=${INNSTANCE_ACTION_SHOW_APP_LOG:-false}
 api_url=${INNSTANCE_ACTION_API_URL:-}
 in_actions=${GITHUB_ACTIONS:-}
 
@@ -309,6 +310,7 @@ deploy() {
   fi
   [[ $wait_seconds =~ ^[0-9]+$ ]] || fail "wait-seconds must be a whole number: $wait_seconds"
   [[ $health_path == /* ]] || fail "health-path must start with /: $health_path"
+  [[ $show_app_log == true || $show_app_log == false ]] || fail "show-app-log must be true or false: $show_app_log"
   # Packages may be split by spaces or lines; read -a splits words without
   # expanding globs.
   while IFS= read -r entry; do
@@ -359,8 +361,14 @@ deploy() {
           --proto "$url_proto" --max-time 10 "$url$health_path" || true)
         [[ $code =~ ^[23][0-9][0-9]$ ]] && break
         if [[ $SECONDS -ge $deadline ]]; then
-          "$cli" machines exec --app "$name" -- tail -n 50 /tmp/innstance-action.log || true
-          fail "$url$health_path did not answer with 2xx/3xx within ${wait_seconds}s (last status $code). The app log is above"
+          # Job logs of public repositories are public, and an app's log can
+          # hold what it should not: connection strings, user data. It is
+          # printed only when the workflow asks.
+          if [[ $show_app_log == true ]]; then
+            "$cli" machines exec --app "$name" -- tail -n 50 /tmp/innstance-action.log || true
+            fail "$url$health_path did not answer with 2xx/3xx within ${wait_seconds}s (last status $code). The app log is above"
+          fi
+          fail "$url$health_path did not answer with 2xx/3xx within ${wait_seconds}s (last status $code). Read the app log with: innstance machines exec --app $name -- tail -n 50 /tmp/innstance-action.log"
         fi
         sleep 5
       done

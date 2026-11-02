@@ -120,7 +120,9 @@ The action runs these steps, in this order:
 6. It runs `start-command` with `sh` in `remote-dir`, detached, logging to
    `/tmp/innstance-action.log` on the VM.
 7. It waits up to `wait-seconds` for `health-path` to answer 2xx or 3xx. If
-   it never does, the step fails and prints the end of the app log.
+   it never does, the step fails and prints the command that shows the app
+   log. With `show-app-log: true` it prints the end of the log itself; see
+   [The app log](#the-app-log) before you turn that on.
 
 The app must listen on `0.0.0.0` (or `::`), not `127.0.0.1`, on the port
 the app is configured for. Without `start-command`, the files are pushed and
@@ -174,6 +176,7 @@ so every step runs the build that was verified.
 | `packages` | | deploy | Debian packages to install before starting. |
 | `health-path` | `/` | deploy | Path that must answer 2xx or 3xx. |
 | `wait-seconds` | `120` | deploy | How long to wait for `health-path`; `0` skips the check. |
+| `show-app-log` | `false` | deploy | Print the end of the app log when `health-path` never answers. |
 | `api-url` | | all | Control-plane origin for staging or self-hosted installs. |
 | `cli-build-id` | | all | Refuse any CLI release except this build ID. |
 
@@ -221,6 +224,15 @@ must run one exact build.
 - GitHub gives no secrets to workflows triggered by pull requests from
   forks. In that case the action stops with an error that says so, and
   publishes nothing.
+
+### The app log
+
+Anyone who can read a public repository can read its job logs, and an
+app's log can hold secrets: a connection string in a startup error, an
+environment dump, user data. Values set with `innstance secrets` are not
+GitHub secrets, so GitHub does not mask them. The action therefore never
+prints the app log unless `show-app-log: true` is set. Leave it off in
+public repositories.
 
 ### Inputs
 
