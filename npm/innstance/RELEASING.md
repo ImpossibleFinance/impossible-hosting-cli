@@ -86,7 +86,8 @@ skipped on changes that do not touch the package.
 ## Each release
 
 1. Land the change on `main` with `version` bumped in `package.json`. The
-   `npm-package` workflow must be green.
+   `npm-package` workflow must be green. For the first release, the same
+   change removes the "not published yet" note from `npm/innstance/README.md`.
 2. Tag that commit and push the tag:
 
    ```sh
