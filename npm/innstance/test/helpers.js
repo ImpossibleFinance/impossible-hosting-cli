@@ -71,6 +71,8 @@ async function startFakeServer(overrides = {}) {
     deny: false,
     mcp: 'json', // json | sse | missing | 500 | refuse (401 for every token) | 403
     healthStatus: 200,
+    logoutStatus: 200, // anything else: the server fails to end the session
+    logoutReason: '', // a 200 that ends nothing, with this reason
     grant: null, // override the start response body
     startStatus: 200,
     pollStatus: null, // force one status for every poll
@@ -131,6 +133,8 @@ async function startFakeServer(overrides = {}) {
     if (route === 'POST /auth/logout') {
       const token = bearerOf(req);
       if (!valid(token)) return json(res, 401, { error: 'unauthorized' });
+      if (state.logoutStatus !== 200) return json(res, state.logoutStatus, { error: 'could not end the session' });
+      if (state.logoutReason) return json(res, 200, { revoked: false, reason: state.logoutReason });
       for (const [name, t] of state.sessions) if (t === token) state.sessions.delete(name);
       state.logouts++;
       return json(res, 200, { revoked: true });
@@ -226,6 +230,12 @@ function makeContext(home, server, { agents = [], env = {} } = {}) {
   return { ctx, out, err, opened, text: () => out.concat(err).join('\n') };
 }
 
+// savedSession is the session this machine saved for the control plane the
+// context points at.
+function savedSession(ctx) {
+  return require('../lib/session').loadSession(ctx, ctx.env.IMPOSSIBLE_API_URL);
+}
+
 function readJSON(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
@@ -234,4 +244,4 @@ function mode(file) {
   return fs.statSync(file).mode & 0o777;
 }
 
-module.exports = { startFakeServer, makeContext, tempHome, testSkill, newToken, readJSON, mode, sha256 };
+module.exports = { startFakeServer, makeContext, tempHome, testSkill, newToken, readJSON, mode, sha256, savedSession };

@@ -4,7 +4,8 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { readTextIfExists, writeFileAtomic } = require('./fsutil');
+const { readTextIfExists, withFileLock, writeFileAtomic } = require('./fsutil');
+const { validateOrigin } = require('./origin');
 
 // The npx session is its own sign-in, separate from the Go CLI's. Both live in
 // ~/.impossible, but in different files, for a reason that matters: the
@@ -16,6 +17,16 @@ const { readTextIfExists, writeFileAtomic } = require('./fsutil');
 //
 // The token is kept here (owner-only) so `doctor` can check it and a second
 // `npx innstance` run can connect another agent without a browser round trip.
+//
+// The file holds one session per control plane, keyed by origin, so setting
+// up against a staging plane (--server) does not forget the production
+// session: each can still be reused, checked and ended on its own. The
+// device id is one per machine and shared by all of them.
+//
+//   { "version": 2, "device_id": "7f3a",
+//     "sessions": { "<origin>": { "email", "token", "device_name" } } }
+//
+// Version 1 files (a single session with a "server" field) are still read.
 const SESSION_FILE = 'npx-session.json';
 
 function sessionPath(ctx) {
@@ -31,45 +42,103 @@ function validToken(token) {
   return typeof token === 'string' && token.length >= 16 && token.length <= 1024 && TOKEN_PATTERN.test(token);
 }
 
-function loadSession(ctx) {
+function validDeviceId(id) {
+  return typeof id === 'string' && /^[0-9a-f]{4}$/.test(id);
+}
+
+function usableOrigin(origin) {
+  try {
+    return validateOrigin(origin) === origin;
+  } catch {
+    return false;
+  }
+}
+
+// readFile returns { deviceId, sessions } with sessions a Map of origin to
+// { email, token, deviceName }. A missing or damaged file reads as empty.
+function readFile(ctx) {
+  const empty = { deviceId: '', sessions: new Map() };
   const text = readTextIfExists(sessionPath(ctx));
-  if (text === null) return null;
+  if (text === null) return empty;
   let data;
   try {
     data = JSON.parse(text);
   } catch {
-    return null;
+    return empty;
   }
-  if (!data || typeof data !== 'object') return null;
-  return {
-    server: typeof data.server === 'string' ? data.server : '',
-    email: typeof data.email === 'string' ? data.email : '',
-    token: validToken(data.token) ? data.token : '',
-    deviceName: typeof data.device_name === 'string' ? data.device_name : '',
-    deviceId: typeof data.device_id === 'string' && /^[0-9a-f]{4}$/.test(data.device_id) ? data.device_id : '',
-  };
+  if (!data || typeof data !== 'object') return empty;
+  const entries =
+    data.sessions && typeof data.sessions === 'object'
+      ? Object.entries(data.sessions)
+      : typeof data.server === 'string'
+        ? [[data.server, data]] // version 1
+        : [];
+  const sessions = new Map();
+  for (const [origin, entry] of entries) {
+    if (!usableOrigin(origin) || !entry || typeof entry !== 'object') continue;
+    sessions.set(origin, {
+      email: typeof entry.email === 'string' ? entry.email : '',
+      token: validToken(entry.token) ? entry.token : '',
+      deviceName: typeof entry.device_name === 'string' ? entry.device_name : '',
+    });
+  }
+  return { deviceId: validDeviceId(data.device_id) ? data.device_id : '', sessions };
 }
 
-async function saveSession(ctx, session) {
-  const body = {
-    version: 1,
-    server: session.server,
-    email: session.email || '',
-    token: session.token,
-    device_name: session.deviceName || '',
-    device_id: session.deviceId || '',
-  };
+async function writeFile(ctx, deviceId, sessions) {
+  const body = { version: 2, device_id: deviceId, sessions: {} };
+  for (const [origin, entry] of sessions) {
+    body.sessions[origin] = { email: entry.email || '', token: entry.token, device_name: entry.deviceName || '' };
+  }
   await writeFileAtomic(sessionPath(ctx), JSON.stringify(body, null, 2) + '\n');
 }
 
-function clearSession(ctx) {
-  try {
-    fs.unlinkSync(sessionPath(ctx));
-    return true;
-  } catch (err) {
-    if (err.code === 'ENOENT') return false;
-    throw err;
-  }
+// loadSession returns this machine's saved session for one control plane,
+// or null when there is none.
+function loadSession(ctx, origin) {
+  const { deviceId, sessions } = readFile(ctx);
+  const entry = sessions.get(origin);
+  return entry ? { server: origin, ...entry, deviceId } : null;
+}
+
+// machineDeviceId is the id this machine already uses in its device names,
+// or '' before the first sign-in.
+function machineDeviceId(ctx) {
+  return readFile(ctx).deviceId;
+}
+
+// savedOrigins lists the control planes this machine has a session for.
+function savedOrigins(ctx) {
+  return [...readFile(ctx).sessions.keys()];
+}
+
+async function saveSession(ctx, session) {
+  await withFileLock(sessionPath(ctx), async () => {
+    const { deviceId, sessions } = readFile(ctx);
+    sessions.set(session.server, { email: session.email, token: session.token, deviceName: session.deviceName });
+    await writeFile(ctx, session.deviceId || deviceId, sessions);
+  });
+}
+
+// clearSession forgets one control plane's session, and the file with it
+// once no session is left. Returns whether there was one to forget.
+async function clearSession(ctx, origin) {
+  let removed = false;
+  await withFileLock(sessionPath(ctx), async () => {
+    const { deviceId, sessions } = readFile(ctx);
+    removed = sessions.delete(origin);
+    if (!removed) return;
+    if (sessions.size > 0) {
+      await writeFile(ctx, deviceId, sessions);
+      return;
+    }
+    try {
+      fs.unlinkSync(sessionPath(ctx));
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+  });
+  return removed;
 }
 
 // osLabel matches the Go CLI's words for the machine.
@@ -128,6 +197,8 @@ module.exports = {
   loadSession,
   saveSession,
   clearSession,
+  machineDeviceId,
+  savedOrigins,
   validToken,
   deviceName,
   newDeviceId,

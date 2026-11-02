@@ -6,7 +6,7 @@ const { tildify } = require('./context');
 const { signIn } = require('./device');
 const { probeMCP } = require('./mcp');
 const { DEFAULT_ORIGIN, mcpURL } = require('./origin');
-const { deviceName, loadSession, newDeviceId, saveSession } = require('./session');
+const { deviceName, loadSession, machineDeviceId, newDeviceId, saveSession } = require('./session');
 const { fetchSkill, installSkill } = require('./skill');
 
 function names(agents) {
@@ -19,9 +19,9 @@ function names(agents) {
 // for this control plane, and otherwise signs in with the device flow. A
 // saved token is only ever sent to the origin it was issued by.
 async function ensureSession(ctx, origin, { relogin }) {
-  const saved = loadSession(ctx);
-  const deviceId = (saved && saved.deviceId) || newDeviceId();
-  if (saved && saved.token && saved.server === origin && !relogin) {
+  const saved = loadSession(ctx, origin);
+  const deviceId = machineDeviceId(ctx) || newDeviceId();
+  if (saved && saved.token && !relogin) {
     const me = await whoami(origin, saved.token);
     if (me.valid) {
       ctx.out(`Signed in as ${me.email || saved.email} (this machine's saved session).`);

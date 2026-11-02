@@ -6,7 +6,7 @@ const { AGENTS, readMCP } = require('./agents');
 const { health, whoami } = require('./account');
 const { tildify } = require('./context');
 const { probeMCP } = require('./mcp');
-const { mcpURL } = require('./origin');
+const { DEFAULT_ORIGIN, mcpURL } = require('./origin');
 const { loadSession } = require('./session');
 const { PIN, SKILL_NAME, compareVersions, readInstalled } = require('./skill');
 
@@ -43,12 +43,10 @@ async function doctor(ctx, opts) {
     report('fail', 'Control plane', err.message);
   }
 
-  const session = loadSession(ctx);
+  const session = loadSession(ctx, origin);
   let token = '';
   if (!session || !session.token) {
-    report('warn', 'Session', 'this machine is not signed in with npx innstance; run: npx innstance');
-  } else if (session.server !== origin) {
-    report('warn', 'Session', `the saved session is for ${session.server || 'another server'}; run: npx innstance --server ${origin}`);
+    report('warn', 'Session', `this machine is not signed in with npx innstance; run: npx innstance${origin === DEFAULT_ORIGIN ? '' : ` --server ${origin}`}`);
   } else if (reachable) {
     try {
       const me = await whoami(origin, session.token);
@@ -90,7 +88,7 @@ async function doctor(ctx, opts) {
       report('fail', agent.name, `${tildify(ctx, file)} has no bearer token for innstance; run: npx innstance --agents ${agent.id}`);
       continue;
     }
-    if (session && session.token && session.server === origin && entry.token !== session.token) {
+    if (session && session.token && entry.token !== session.token) {
       report('fail', agent.name, `${tildify(ctx, file)} holds an older session's token; run: npx innstance`);
       continue;
     }

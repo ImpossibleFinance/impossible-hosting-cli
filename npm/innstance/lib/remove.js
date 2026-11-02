@@ -4,7 +4,7 @@ const { AGENTS, removeMCP } = require('./agents');
 const { logout } = require('./account');
 const { tildify } = require('./context');
 const { mcpURL } = require('./origin');
-const { clearSession, loadSession } = require('./session');
+const { clearSession, loadSession, savedOrigins } = require('./session');
 const { removeSkill } = require('./skill');
 
 // remove undoes setup. With no --agents it disconnects every agent, removes
@@ -54,24 +54,31 @@ async function remove(ctx, opts) {
   }
 
   if (everything) {
-    const session = loadSession(ctx);
-    let keep = false;
-    if (session && session.server && session.server !== origin) {
-      keep = true;
-      ctx.out(`  Session: kept the saved session for ${session.server}; run npx innstance remove --server ${session.server} to end it`);
-    } else if (session && session.token) {
+    const session = loadSession(ctx, origin);
+    if (session && session.token) {
+      let forget = false;
       try {
         const out = await logout(origin, session.token);
+        forget = out.ended;
         if (out.revoked) ctx.out('  Session: ended on the server');
-        else ctx.out(`  Session: not ended on the server (${out.detail || 'already ended'})`);
+        else if (out.ended) ctx.out(`  Session: ${out.detail}`);
+        else {
+          failures++;
+          ctx.err(`  Session: not ended (${out.detail}); revoke it from ${origin}/dashboard, then run npx innstance remove again`);
+        }
       } catch (err) {
-        // Keep the token so running remove again can still end it.
         failures++;
-        keep = true;
         ctx.err(`  Session: could not end it (${err.message}); run npx innstance remove again, or revoke it from ${origin}/dashboard`);
       }
+      // The token is kept until the server confirms the session is over, so
+      // running remove again can still end it.
+      if (forget && (await clearSession(ctx, origin))) ctx.out('  Session: forgotten on this machine');
+    } else if (session) {
+      await clearSession(ctx, origin);
     }
-    if (!keep && clearSession(ctx)) ctx.out('  Session: forgotten on this machine');
+    for (const other of savedOrigins(ctx)) {
+      ctx.out(`  This machine is also signed in to ${other}; to end that: npx innstance remove --server ${other}`);
+    }
   }
 
   ctx.out('');

@@ -8,8 +8,8 @@ const test = require('node:test');
 const { main } = require('../lib/cli');
 const jsonc = require('../lib/jsonc');
 const toml = require('../lib/toml');
-const { loadSession, sessionPath } = require('../lib/session');
-const { makeContext, mode, readJSON, startFakeServer, tempHome } = require('./helpers');
+const { sessionPath } = require('../lib/session');
+const { makeContext, mode, readJSON, startFakeServer, tempHome, savedSession } = require('./helpers');
 
 const ALL = ['claude', 'codex', 'cursor', 'opencode'];
 
@@ -56,7 +56,7 @@ test('setup signs in once and connects every installed agent', async (t) => {
   const code = await main([], ctx);
   assert.equal(code, 0, text());
 
-  const session = loadSession(ctx);
+  const session = savedSession(ctx);
   assert.match(session.deviceName, /^npx-[a-z0-9]+-test-laptop[a-z-]*-[0-9a-f]{4}$/);
   assert.deepEqual(server.state.deviceNames, [session.deviceName]);
   assert.equal(opened.length, 1);
@@ -106,7 +106,7 @@ test('a second run reuses the saved session and connects a newly named agent', a
   const home = tempHome(t);
   const first = makeContext(home, server, { agents: ['claude'] });
   assert.equal(await main([], first.ctx), 0, first.text());
-  const token = loadSession(first.ctx).token;
+  const token = savedSession(first.ctx).token;
 
   const second = makeContext(home, server);
   assert.equal(await main(['--agents', 'cursor'], second.ctx), 0, second.text());
@@ -124,13 +124,13 @@ test('--relogin replaces the session and refreshes every connected agent', async
   const home = tempHome(t);
   const first = makeContext(home, server, { agents: ['claude', 'codex'] });
   assert.equal(await main([], first.ctx), 0, first.text());
-  const before = loadSession(first.ctx);
+  const before = savedSession(first.ctx);
 
   // Sign in again but name only Cursor: the claude and codex agents still
   // point at this endpoint, so they must get the new token too.
   const again = makeContext(home, server);
   assert.equal(await main(['--relogin', '--agents', 'cursor'], again.ctx), 0, again.text());
-  const after = loadSession(again.ctx);
+  const after = savedSession(again.ctx);
   assert.equal(after.deviceName, before.deviceName, 'same machine, same session name');
   assert.notEqual(after.token, before.token);
   assert.equal(server.validToken(before.token), false, 'the server replaced the old session');
@@ -162,7 +162,7 @@ test('a refresh changes only the url and token, keeping what the person set', as
   // A new sign-in refreshes them, and only their url and token change.
   const again = makeContext(home, server);
   assert.equal(await main(['--relogin', '--agents', 'claude'], again.ctx), 0, again.text());
-  const token = loadSession(again.ctx).token;
+  const token = savedSession(again.ctx).token;
   const entry = jsonc.parse(fs.readFileSync(p.opencode, 'utf8')).mcp.innstance;
   assert.equal(entry.enabled, false, 'OpenCode stays disabled');
   assert.equal(entry.timeout, 30000);
@@ -188,7 +188,7 @@ test('setup leaves an innstance entry it did not write unless --force', async (t
 
   const forced = makeContext(home, server);
   assert.equal(await main(['--agents', 'cursor', '--force'], forced.ctx), 0, forced.text());
-  assert.deepEqual(readJSON(p.cursor).mcpServers.innstance, { url: server.origin + '/mcp', headers: { Authorization: `Bearer ${loadSession(forced.ctx).token}` } });
+  assert.deepEqual(readJSON(p.cursor).mcpServers.innstance, { url: server.origin + '/mcp', headers: { Authorization: `Bearer ${savedSession(forced.ctx).token}` } });
   assert.match(forced.text(), /replaced the "innstance" entry \(--force\)/);
 });
 
@@ -204,7 +204,7 @@ test('no agent is left holding a token a new sign-in ended', async (t) => {
   server.state.mcp = 'refuse';
   const again = makeContext(home, server);
   assert.equal(await main(['--relogin'], again.ctx), 1, again.text());
-  const token = loadSession(again.ctx).token;
+  const token = savedSession(again.ctx).token;
   assert.equal(tokensIn(home).cursor, token);
   assert.equal(server.validToken(token), true);
   assert.match(again.err.join('\n'), /refused this token/);
@@ -221,7 +221,7 @@ test('a session revoked from the dashboard leads to a fresh sign-in', async (t) 
   assert.equal(await main([], second.ctx), 0, second.text());
   assert.match(second.out.join('\n'), /has ended; signing in again/);
   assert.equal(server.state.deviceNames.length, 2);
-  assert.equal(tokensIn(home).cursor, loadSession(second.ctx).token);
+  assert.equal(tokensIn(home).cursor, savedSession(second.ctx).token);
 });
 
 test('setup with nothing to connect stops before sign-in', async (t) => {
@@ -268,7 +268,7 @@ test('a broken config is reported and left exactly as it was', async (t) => {
   assert.equal(fs.readFileSync(p.codex, 'utf8'), '[mcp_servers]\ninnstance = { url = "x" }\n');
   assert.match(err.join('\n'), /Cursor: .*mcp\.json was not changed/);
   assert.match(err.join('\n'), /Codex: .*inline table/);
-  assert.equal(readJSON(p.claude).mcpServers.innstance.headers.Authorization, `Bearer ${loadSession(ctx).token}`, 'the healthy agent is still connected');
+  assert.equal(readJSON(p.claude).mcpServers.innstance.headers.Authorization, `Bearer ${savedSession(ctx).token}`, 'the healthy agent is still connected');
 });
 
 test('setup follows a symlinked config instead of replacing the link', { skip: process.platform === 'win32' }, async (t) => {
@@ -313,7 +313,7 @@ test('a saved session is never sent to a different control plane', async (t) => 
   const home = tempHome(t);
   const a = makeContext(home, first, { agents: ['cursor'] });
   assert.equal(await main([], a.ctx), 0);
-  const token = loadSession(a.ctx).token;
+  const token = savedSession(a.ctx).token;
   const b = makeContext(home, second);
   // Cursor's entry points at the first control plane: moving it needs --force.
   assert.equal(await main(['--agents', 'cursor'], b.ctx), 1, b.text());

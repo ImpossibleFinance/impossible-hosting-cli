@@ -23,12 +23,21 @@ async function whoami(origin, token) {
 // logout ends the session on the server (POST /auth/logout). The server only
 // ever revokes session slots this way, never an API token someone pasted, so
 // this cannot sign out another machine.
+//
+// ended says whether the token is now safe to forget: true only when the
+// server confirmed the session is over (revoked now, or already gone). Any
+// other answer, an error status or a refusal, leaves ended false or throws,
+// so the caller keeps the token and the person can try again; forgetting it
+// would leave a live, never-expiring session with no local copy to end it.
 async function logout(origin, token) {
   const res = await postJSON(origin + '/auth/logout', {}, { headers: { Authorization: `Bearer ${token}` } });
-  if (res.status === 401) return { revoked: false, detail: 'the session had already ended' };
-  if (res.status !== 200) return { revoked: false, detail: serverMessage(res) };
+  if (res.status === 401) return { ended: true, revoked: false, detail: 'the session had already ended' };
+  if (res.status !== 200) throw new Error(`the server did not end it: ${serverMessage(res)}`);
   const out = parseJSONBody(res) || {};
-  return { revoked: out.revoked === true, detail: typeof out.reason === 'string' ? out.reason : '' };
+  if (out.revoked === true) return { ended: true, revoked: true, detail: '' };
+  const reason = typeof out.reason === 'string' ? out.reason.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim().slice(0, 300) : '';
+  if (reason === 'session already ended') return { ended: true, revoked: false, detail: 'the session had already ended' };
+  return { ended: false, revoked: false, detail: reason || 'the server did not end it' };
 }
 
 async function health(origin) {
