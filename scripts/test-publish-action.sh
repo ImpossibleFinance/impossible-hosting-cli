@@ -492,7 +492,7 @@ else
   not_ok "the job log: a value with a newline stays inside its own message"
 fi
 dir=$(new_workdir)
-rejected "the job log: an input in a command property is escaped" "$dir" GITHUB_ACTIONS=true \
+rejected "the job log: a mode that tries to start a command is refused" "$dir" GITHUB_ACTIONS=true \
   "INNSTANCE_ACTION_MODE=$(printf 'x::y,\n::add-mask::z')"
 runner_commands "$test_root/out" > "$dir/commands"
 if [[ $(grep -c . "$dir/commands") == 1 ]] &&
@@ -500,7 +500,7 @@ if [[ $(grep -c . "$dir/commands") == 1 ]] &&
   ok "the job log: an input in a command property is escaped"
 else
   sed 's/^/    /' "$dir/commands" >&2
-  not_ok "the job log: an input in a command property is escaped (output)"
+  not_ok "the job log: an input in a command property is escaped"
 fi
 
 dir=$(new_workdir)
