@@ -324,6 +324,8 @@ deploy() {
   if [[ ! -f impossible.toml ]]; then
     write_app_config
   fi
+  # deploy restarts the app's VM, which ends every process on it: the app is
+  # down from here until the start below answers.
   "$cli" "${deploy_args[@]}" > "$work/deploy.json" || fail "deploy failed; the CLI's explanation is above"
   url=$(jq -r '.url // empty' "$work/deploy.json")
   url=${url%/}
@@ -331,15 +333,19 @@ deploy() {
   set_output url "$url"
   pass_notices "$work/deploy.json"
 
+  # Packages first: nothing in an install needs the app stopped, and a
+  # deploy that kept the VM running keeps serving through it.
+  if [[ ${#packages[@]} -gt 0 ]]; then
+    "$cli" machines install --app "$name" -- "${packages[@]}" || fail "package install failed"
+  fi
   if [[ -n $start_command ]]; then
-    # Stop what an earlier run started before the push replaces its files,
-    # so the push neither races a writer nor finds its files held open.
+    # The restart has usually ended the previous process already. If the VM
+    # kept running, stop what an earlier run started before the push
+    # replaces its files, so the push neither races a writer nor finds its
+    # files held open.
     "$cli" machines exec --app "$name" -- \
       sh -c "$(cat "$action_dir/remote-stop.sh")" innstance-action ||
       fail "could not stop the previous process on $name"
-  fi
-  if [[ ${#packages[@]} -gt 0 ]]; then
-    "$cli" machines install --app "$name" -- "${packages[@]}" || fail "package install failed"
   fi
   "$cli" machines push --app "$name" --to "$remote_dir" --yes-replace -- "$path" ||
     fail "push failed; the CLI's explanation is above"
@@ -372,6 +378,12 @@ deploy() {
         fi
         sleep 5
       done
+      # An answer shows that something listens on the port, not that it is
+      # what this run started: a server a package install started, or one
+      # the restart did not end, would answer while the new one exited with
+      # "address in use".
+      "$cli" machines exec --app "$name" -- sh -c "$(cat "$action_dir/remote-check.sh")" innstance-action ||
+        fail "$url$health_path answered, but the process this run started is not running: something else is serving. Keep the server in the foreground (start-command must not daemonize), and read the app log with: innstance machines exec --app $name -- tail -n 50 /tmp/innstance-action.log"
       echo "Live: $url$health_path answered $code"
     fi
     summary "Deployed **$name**: $url"

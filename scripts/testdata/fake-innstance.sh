@@ -18,11 +18,15 @@ if [[ -z ${IMPOSSIBLE_API_TOKEN:-} ]]; then
 fi
 
 logged=()
+checking=0
 for arg in "$@"; do
   if [[ -n ${FAKE_STOP_SCRIPT:-} && $arg == "$(cat "$FAKE_STOP_SCRIPT")" ]]; then
     logged+=('<remote-stop.sh>')
   elif [[ -n ${FAKE_START_SCRIPT:-} && $arg == "$(cat "$FAKE_START_SCRIPT")" ]]; then
     logged+=('<remote-start.sh>')
+  elif [[ -n ${FAKE_CHECK_SCRIPT:-} && $arg == "$(cat "$FAKE_CHECK_SCRIPT")" ]]; then
+    logged+=('<remote-check.sh>')
+    checking=1
   else
     logged+=("$(printf '%q' "$arg")")
   fi
@@ -118,7 +122,14 @@ case "$1 ${2:-} ${3:-}" in
   "sites domains add") domain_add_answer "${*: -1}" ;;
   "machines domains add") domain_add_answer "${*: -1}" ;;
   "sites domains check"|"machines domains check") domain_check_answer "${*: -1}" ;;
-  "machines exec "*|"machines install "*|"machines push "*) ;;
+  "machines exec "*)
+    # FAKE_NOT_RUNNING: the process the action started has already exited.
+    if [[ $checking == 1 && -n ${FAKE_NOT_RUNNING:-} ]]; then
+      echo "nothing this deploy started is still running; its log is /tmp/innstance-action.log"
+      exit 1
+    fi
+    ;;
+  "machines install "*|"machines push "*) ;;
   *)
     echo "fake-innstance: unexpected command: $*" >&2
     exit 2

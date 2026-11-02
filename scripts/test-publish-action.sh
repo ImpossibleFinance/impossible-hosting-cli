@@ -249,6 +249,7 @@ run_action() {
     env GITHUB_OUTPUT="$dir/output" GITHUB_STEP_SUMMARY="$dir/summary" \
       INNSTANCE_CLI="$cli_dir/innstance" FAKE_LOG="$dir/log" \
       FAKE_STOP_SCRIPT="$action/remote-stop.sh" FAKE_START_SCRIPT="$action/remote-start.sh" \
+      FAKE_CHECK_SCRIPT="$action/remote-check.sh" \
       IMPOSSIBLE_API_TOKEN="$token" "$@" bash "$action/publish.sh"
   ) > "$test_root/out" 2>&1
 }
@@ -407,15 +408,15 @@ if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=api \
      INNSTANCE_ACTION_START_COMMAND='node server.js' INNSTANCE_ACTION_WAIT_SECONDS=0 &&
    expect_log "$dir" \
      'deploy --json --yes --app api --port 3000' \
-     'machines exec --app api -- sh -c <remote-stop.sh> innstance-action' \
      'machines install --app api -- nodejs npm ca-certificates' \
+     'machines exec --app api -- sh -c <remote-stop.sh> innstance-action' \
      'machines push --app api --to /app --yes-replace -- .' \
      "machines exec --app api -- sh -c <remote-start.sh> innstance-action /app node\\ server.js" &&
    expect_toml "$dir" "$(printf 'app = "api"\n\n[service]\ninternal_port = 3000\n')" &&
    has_output "$dir" url=https://api.innstance.app; then
-  ok "deploy: names only the app and the given port, stops the last run's process, pushes, then starts"
+  ok "deploy: names only the app and the given port, installs, stops the last run's process, pushes, then starts"
 else
-  not_ok "deploy: names only the app and the given port, stops the last run's process, pushes, then starts"
+  not_ok "deploy: names only the app and the given port, installs, stops the last run's process, pushes, then starts"
 fi
 
 # An app that already runs, at 4 GB on port 5000, with no impossible.toml in
@@ -519,11 +520,20 @@ dir=$(new_workdir)
 if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=probe \
      INNSTANCE_ACTION_START_COMMAND='./serve' INNSTANCE_ACTION_ALLOW_HTTP=1 \
      FAKE_APP_URL="$origin" INNSTANCE_ACTION_HEALTH_PATH=/dl/release.txt &&
-   has_output "$dir" "url=$origin"; then
-  ok "deploy: succeeds once health-path answers"
+   has_output "$dir" "url=$origin" &&
+   [[ $(tail -n 1 "$dir/log") == 'machines exec --app probe -- sh -c <remote-check.sh> innstance-action' ]]; then
+  ok "deploy: succeeds once health-path answers and the started process still runs"
 else
-  not_ok "deploy: succeeds once health-path answers"
+  not_ok "deploy: succeeds once health-path answers and the started process still runs"
 fi
+
+dir=$(new_workdir)
+CLI_CALLED=1 rejected "deploy: fails when health-path answers but the started process has exited" "$dir" \
+  INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=probe INNSTANCE_ACTION_START_COMMAND='./serve' \
+  INNSTANCE_ACTION_ALLOW_HTTP=1 FAKE_APP_URL="$origin" INNSTANCE_ACTION_HEALTH_PATH=/dl/release.txt \
+  FAKE_NOT_RUNNING=1
+grep -Fq 'something else is serving' "$test_root/out" ||
+  not_ok "a health check answered by something else says so"
 
 dir=$(new_workdir)
 CLI_CALLED=1 rejected "deploy: fails when health-path never answers" "$dir" \
@@ -593,11 +603,34 @@ if [[ -d /proc/self && -r /proc/self/environ ]] && command -v setsid >/dev/null 
   else
     not_ok "remote-start: runs the start command detached and marked, in remote-dir"
   fi
+  if sh -c "$(cat "$action/remote-check.sh")" innstance-action > "$test_root/out" 2>&1; then
+    ok "remote-check: finds the process this run started"
+  else
+    not_ok "remote-check: finds the process this run started"
+  fi
   sh -c "$(cat "$action/remote-stop.sh")" innstance-action > "$test_root/out" 2>&1
   if [[ -n $marked ]] && ! alive "$marked" && alive "$bystander"; then
     ok "remote-stop: stops the marked process and nothing else"
   else
     not_ok "remote-stop: stops the marked process and nothing else"
+  fi
+  # The bystander still answers on the VM, but it is not what this run
+  # started, so the check must not pass because of it.
+  if ! sh -c "$(cat "$action/remote-check.sh")" innstance-action > "$test_root/out" 2>&1; then
+    ok "remote-check: fails once the started process is gone, whatever else runs"
+  else
+    not_ok "remote-check: fails once the started process is gone, whatever else runs"
+  fi
+  sh -c "$(cat "$action/remote-start.sh")" innstance-action "$remote" 'exit 3' > "$test_root/out" 2>&1
+  for _ in $(seq 1 50); do
+    [[ -s /tmp/innstance-action.session ]] && break
+    sleep 0.1
+  done
+  sleep 0.5
+  if ! sh -c "$(cat "$action/remote-check.sh")" innstance-action > "$test_root/out" 2>&1; then
+    ok "remote-check: fails when the start command exited at once"
+  else
+    not_ok "remote-check: fails when the start command exited at once"
   fi
   kill "$bystander" 2>/dev/null || true
   if sh -c "$(cat "$action/remote-stop.sh")" innstance-action > "$test_root/out" 2>&1 &&

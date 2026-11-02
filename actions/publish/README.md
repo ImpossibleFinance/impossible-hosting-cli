@@ -108,10 +108,14 @@ The action runs these steps, in this order:
    platform's defaults, on port 8080 unless `port` sets one. With an
    `impossible.toml`, every setting in it applies to the app (size, port,
    autostop, environment, volumes), and `name` and `port` override it.
-2. `innstance deploy`, which creates the app or reuses its runner VM.
-3. It stops the process that an earlier run of this action started. It finds
-   that process by a marker in its environment, not by a pid file.
-4. `innstance machines install` for `packages`.
+2. `innstance deploy`, which creates the app or reuses its runner VM. On an
+   app that exists, deploy restarts the VM, which ends every process on it,
+   including one you started by hand. The app is down from here until step
+   7 passes.
+3. `innstance machines install` for `packages`.
+4. If the VM was not restarted, it stops the process that an earlier run of
+   this action started. It finds that process by a marker in its
+   environment, not by a pid file.
 5. `innstance machines push` of `path` into `remote-dir` (default `/app`).
    Push skips `.git`, `node_modules`, `.env*`, `impossible.toml` and anything
    your `.gitignore`, `.dockerignore` or `.impignore` excludes. List the
@@ -123,10 +127,16 @@ The action runs these steps, in this order:
    it never does, the step fails and prints the command that shows the app
    log. With `show-app-log: true` it prints the end of the log itself; see
    [The app log](#the-app-log) before you turn that on.
+8. It checks that the process it started in step 6 is still running. An
+   answer in step 7 only shows that something listens on the port, and
+   that could be another server while yours exited with "address in use".
 
 The app must listen on `0.0.0.0` (or `::`), not `127.0.0.1`, on the port
-the app is configured for. Without `start-command`, the files are pushed and
-nothing is started.
+the app is configured for. `start-command` must keep the server in the
+foreground: a command that daemonizes (`nginx` with its default
+`daemon on`, `pm2 start`) leaves nothing for step 8 to find, and the step
+fails. Use `nginx -g 'daemon off;'`, `pm2-runtime`, or `exec node server.js`.
+Without `start-command`, the files are pushed and nothing is started.
 
 ## Custom domains
 
