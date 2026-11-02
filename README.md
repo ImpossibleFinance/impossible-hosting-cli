@@ -77,6 +77,7 @@ The source repository is private, so the public check cannot confirm that.
 Anyone with a clone of it can, by naming the clone:
 
 ```sh
+git -C /path/to/impossible-hosting fetch origin
 IFHOST_CHANNEL_SOURCE_REPO=/path/to/impossible-hosting \
   scripts/verify-channel.sh \
   https://innstance.impossibuild.ai \
@@ -84,6 +85,12 @@ IFHOST_CHANNEL_SOURCE_REPO=/path/to/impossible-hosting \
   channel-state.json \
   /tmp/ifhost-channel-state.json
 ```
+
+A commit's date is whatever its author wrote, and a clone also holds feature
+and dependency branches, so the verifier then also requires the signed commit
+to be on `origin/main` in that clone. Set `IFHOST_CHANNEL_SOURCE_REF` to check
+another branch. This binds the build ID to a commit that reached the deployed
+branch; it still cannot show which commit the server actually built.
 
 `channel-state.json` is the repository's committed checkpoint, where an audit
 with no history of its own starts. A recurring audit must compare with its

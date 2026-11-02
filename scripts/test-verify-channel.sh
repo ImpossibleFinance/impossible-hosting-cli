@@ -545,25 +545,58 @@ test "$stall_seconds" -lt 120 || {
 same_state "$test_root/next-state.json" "$test_root/stalled-state.json"
 
 # With a clone of the source repository, the verifier also checks that the
-# build ID is the UTC committer time of the signed source commit. The
-# fixture commit is made at 03:02:03 in UTC+2.
+# build ID is the UTC committer time of the signed source commit, and that
+# the commit is on the deployed branch. The fixture commits are made at
+# 03:02:03 in UTC+2.
 source_repo=$test_root/source
 git init -q "$source_repo"
 empty_tree=$(git -C "$source_repo" mktree < /dev/null)
-source_commit=$(
+
+# fixture_commit DATE MESSAGE [PARENT] prints a new empty-tree commit.
+fixture_commit() {
+  if test -n "${3:-}"; then
+    set -- "$1" "$2" -p "$3"
+  else
+    set -- "$1" "$2"
+  fi
   GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid \
     GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid \
-    GIT_AUTHOR_DATE='2026-09-06T03:02:03+02:00' GIT_COMMITTER_DATE='2026-09-06T03:02:03+02:00' \
-    git -C "$source_repo" commit-tree --no-gpg-sign -m 'cli: a change' "$empty_tree"
-)
+    GIT_AUTHOR_DATE=$1 GIT_COMMITTER_DATE=$1 \
+    git -C "$source_repo" commit-tree --no-gpg-sign "${@:3}" -m "$2" "$empty_tree"
+}
+
+source_commit=$(fixture_commit '2026-09-06T03:02:03+02:00' 'cli: a change')
+main_head=$(fixture_commit '2026-09-07T09:00:00+02:00' 'server: a later change' "$source_commit")
+git -C "$source_repo" update-ref refs/remotes/origin/main "$main_head"
 publish "20260906-010203-$source_commit" "$source_commit"
 IFHOST_CHANNEL_SOURCE_REPO=$source_repo accept "a build ID that is its source commit's time" \
   "$test_root/next-state.json" "$test_root/source-state.json"
-grep -Fq "build_id is the commit time of source commit $source_commit" "$test_root/verifier.out"
+grep -Fq "build_id is the commit time of source commit $source_commit, which is on origin/main ($main_head)" \
+  "$test_root/verifier.out"
 
 publish "20260906-010204-$source_commit" "$source_commit"
 IFHOST_CHANNEL_SOURCE_REPO=$source_repo reject "a build ID that is not its source commit's time" \
   "is not the commit time of its signed source commit (20260906-010203 UTC)" "$test_root/next-state.json"
+
+# A commit's date is whatever its author wrote, and a clone holds every
+# fetched branch. A commit with the right time that main never reached does
+# not bind the release to anything that was deployed.
+side_commit=$(fixture_commit '2026-09-06T03:02:03+02:00' 'cli: a change on a side branch')
+git -C "$source_repo" update-ref refs/heads/side "$side_commit"
+publish "20260906-010203-$side_commit" "$side_commit"
+IFHOST_CHANNEL_SOURCE_REPO=$source_repo reject "a source commit that is not on main" \
+  "signed source commit $side_commit is not on origin/main in $source_repo" "$test_root/next-state.json"
+
+# The branch is origin/main unless the auditor names another.
+IFHOST_CHANNEL_SOURCE_REPO=$source_repo IFHOST_CHANNEL_SOURCE_REF=side \
+  accept "a source commit on the branch the auditor names" \
+  "$test_root/next-state.json" "$test_root/side-state.json"
+grep -Fq "which is on side ($side_commit)" "$test_root/verifier.out"
+
+IFHOST_CHANNEL_SOURCE_REPO=$source_repo IFHOST_CHANNEL_SOURCE_REF=refs/heads/missing \
+  reject "a deployed branch missing from the clone" \
+  "IFHOST_CHANNEL_SOURCE_REF refs/heads/missing is not a commit in $source_repo" \
+  "$test_root/next-state.json"
 
 unknown_source=3333333333333333333333333333333333333333
 publish "20260906-010203-$unknown_source" "$unknown_source"

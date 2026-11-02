@@ -30,12 +30,19 @@ fi
 for file in "$allowed_signers" "$previous_state"; do
   test -f "$file" || { echo "missing verifier input: $file" >&2; exit 1; }
 done
-# Optional: a local clone of the private source repository.
+# Optional: a local clone of the private source repository, and the branch
+# releases are deployed from (origin/main unless IFHOST_CHANNEL_SOURCE_REF
+# names another).
 source_repo=${IFHOST_CHANNEL_SOURCE_REPO:-}
+source_ref=${IFHOST_CHANNEL_SOURCE_REF:-origin/main}
 if [[ -n $source_repo ]]; then
   command -v git >/dev/null || { echo "missing required verifier: git" >&2; exit 1; }
   git -C "$source_repo" rev-parse --git-dir >/dev/null 2>&1 || {
     echo "IFHOST_CHANNEL_SOURCE_REPO is not a git repository: $source_repo" >&2
+    exit 1
+  }
+  source_head=$(git -C "$source_repo" rev-parse --verify --quiet --end-of-options "$source_ref^{commit}") || {
+    echo "IFHOST_CHANNEL_SOURCE_REF $source_ref is not a commit in $source_repo" >&2
     exit 1
   }
 fi
@@ -365,11 +372,18 @@ build_id=$(jq -r .build_id "$verify_root/parsed.json")
 
 # The build ID's timestamp is the UTC committer time of the signed source
 # commit. The source repository is private, so a public audit cannot check
-# that; a maintainer with a clone can, by naming it here.
+# that; a maintainer with a clone can, by naming it here. A commit's date is
+# whatever its author wrote, and a clone also holds feature and dependency
+# branches, so the commit must be on the deployed branch as well: otherwise
+# the check would only prove that some commit with that date exists.
 if [[ -n $source_repo ]]; then
   source_commit=$(jq -r .source_commit "$verify_root/parsed.json")
   test "$(git -C "$source_repo" cat-file -t "$source_commit" 2>/dev/null)" = commit || {
     echo "signed source commit $source_commit is not a commit in $source_repo" >&2
+    exit 1
+  }
+  git -C "$source_repo" merge-base --is-ancestor "$source_commit" "$source_head" || {
+    echo "signed source commit $source_commit is not on $source_ref in $source_repo" >&2
     exit 1
   }
   git -C "$source_repo" cat-file commit "$source_commit" > "$verify_root/source-commit.txt"
@@ -477,5 +491,5 @@ test "$checked_archives" -eq "$expected_archives" || {
 cp "$verify_root/next-state.json" "$next_state"
 echo "verified server-signed CLI channel $build_id ($checked_archives archives)"
 if [[ -n $source_repo ]]; then
-  echo "build_id is the commit time of source commit $source_commit in $source_repo"
+  echo "build_id is the commit time of source commit $source_commit, which is on $source_ref ($source_head) in $source_repo"
 fi
