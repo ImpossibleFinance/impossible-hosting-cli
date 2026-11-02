@@ -35,6 +35,12 @@ if [[ -n ${FAKE_LOG:-} ]]; then
   printf '%s\n' "${logged[*]}" >> "$FAKE_LOG"
 fi
 
+# FAKE_SAY: a line the CLI prints on stderr, as relayed app output or an API
+# message would be.
+if [[ -n ${FAKE_SAY:-} ]]; then
+  printf '%s\n' "$FAKE_SAY" >&2
+fi
+
 words="$*"
 if [[ -n ${FAKE_FAIL:-} && $words == "$FAKE_FAIL"* ]]; then
   echo "fake-innstance: refusing '$FAKE_FAIL' as the test asked" >&2

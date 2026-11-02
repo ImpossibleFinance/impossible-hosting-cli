@@ -25,25 +25,70 @@ show_app_log=${INNSTANCE_ACTION_SHOW_APP_LOG:-false}
 api_url=${INNSTANCE_ACTION_API_URL:-}
 in_actions=${GITHUB_ACTIONS:-}
 
+# --- the job log ----------------------------------------------------------------
+
+# The runner reads any output line that starts with :: as a workflow
+# command. Everything the CLI prints, and the app log it relays from the VM,
+# is data, so command processing stays paused between ::stop-commands:: and
+# its random token, and the action's own commands resume it for one line
+# each. stderr joins stdout so the runner sees the lines in the order they
+# were written, and a line from the CLI cannot slip into that one-line gap.
+resume_token=
+if [[ $in_actions == true ]]; then
+  exec 2>&1
+  resume_token=innstance-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+  echo "::stop-commands::$resume_token"
+fi
+# command_value escapes a command property the way the runner decodes it,
+# so no value can end the command or start a second one.
+command_value() {
+  local s=$1
+  s=${s//%/%25}
+  s=${s//$'\r'/%0D}
+  s=${s//$'\n'/%0A}
+  s=${s//:/%3A}
+  s=${s//,/%2C}
+  printf '%s' "$s"
+}
+# workflow_command NAME PROPERTIES MESSAGE emits one command the runner acts
+# on, its message escaped as command data.
+workflow_command() {
+  [[ $in_actions == true ]] || return 0
+  local data=$3
+  data=${data//%/%25}
+  data=${data//$'\r'/%0D}
+  data=${data//$'\n'/%0A}
+  printf '::%s::\n' "$resume_token"
+  printf '::%s%s::%s\n' "$1" "${2:+ $2}" "$data"
+  printf '::stop-commands::%s\n' "$resume_token"
+}
+# one_line keeps a message on one line: inputs are echoed when they are
+# refused, before anything has said they are well-formed.
+one_line() {
+  local s=$1
+  s=${s//$'\r'/\\r}
+  s=${s//$'\n'/\\n}
+  s=${s//[[:cntrl:]]/?}
+  printf '%s' "$s"
+}
+title="title=$(command_value "Innstance $(one_line "$mode")")"
 fail() {
-  if [[ $in_actions == true ]]; then
-    echo "::error title=Innstance $mode::$*"
-  fi
-  echo "error: $*" >&2
+  workflow_command error "$title" "$(one_line "$*")"
+  echo "error: $(one_line "$*")" >&2
   exit 1
 }
 warn() {
   if [[ $in_actions == true ]]; then
-    echo "::warning title=Innstance $mode::$*"
+    workflow_command warning "$title" "$(one_line "$*")"
   else
-    echo "warning: $*" >&2
+    echo "warning: $(one_line "$*")" >&2
   fi
 }
 note() {
   if [[ $in_actions == true ]]; then
-    echo "::notice title=Innstance $mode::$*"
+    workflow_command notice "$title" "$(one_line "$*")"
   else
-    echo "note: $*" >&2
+    echo "note: $(one_line "$*")" >&2
   fi
 }
 set_output() {
@@ -92,7 +137,7 @@ pass_notices() {
   while IFS= read -r notice; do
     if [[ -n $notice ]]; then
       warn "$notice"
-      summary "> $notice"
+      summary "> $(one_line "$notice")"
     fi
   done < <(jq -r '.notices[]?, (.trial_note // empty)' "$1")
 }
@@ -110,11 +155,10 @@ if [[ -z ${IMPOSSIBLE_API_TOKEN:-} ]]; then
   fail "token is empty. Pass an Innstance API token from a secret (innstance tokens create). Workflows triggered by pull requests from forks receive no secrets"
 fi
 [[ $IMPOSSIBLE_API_TOKEN != *[[:space:]]* ]] || fail "token must not contain whitespace"
-if [[ $in_actions == true ]]; then
-  # Secrets are masked already; a token handed over from another step's
-  # output is not, until this line.
-  echo "::add-mask::$IMPOSSIBLE_API_TOKEN"
-fi
+# A secret is masked already. A token from anywhere else was printed in this
+# step's header before this line ran, so this only keeps it out of what
+# follows; the README asks for a secret, or a mask in the step that made it.
+workflow_command add-mask '' "$IMPOSSIBLE_API_TOKEN"
 if [[ -n $api_url ]]; then
   export IMPOSSIBLE_API_URL=$api_url
 fi

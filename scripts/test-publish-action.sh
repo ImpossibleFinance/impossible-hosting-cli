@@ -141,7 +141,7 @@ origin=http://127.0.0.1:$(cat "$test_root/port")
 run_install() {
   local dir=$1
   shift
-  GITHUB_OUTPUT=$dir.output GITHUB_PATH=$dir.path GITHUB_ENV=$dir.env \
+  GITHUB_ACTIONS=${IN_ACTIONS:-} GITHUB_OUTPUT=$dir.output GITHUB_PATH=$dir.path GITHUB_ENV=$dir.env \
     INNSTANCE_ACTION_ALLOW_HTTP=${ALLOW_HTTP:-1} \
     bash "$action/install-cli.sh" "${ORIGIN:-$origin}" "${SIGNERS:-$test_root/release-signers}" "$dir" "$@"
 }
@@ -190,6 +190,11 @@ fi
 refused "refuses a release other than the pinned cli-build-id" "$test_root/pin-miss" \
   "20261102-000000-$commit"
 refused "refuses a cli-build-id that is not a build ID" "$test_root/pin-bad" 'latest'
+IN_ACTIONS=true refused "refuses a cli-build-id that tries to start a workflow command" "$test_root/pin-inject" \
+  "$(printf 'latest\n::set-output name=cli-path::/tmp/evil')"
+if grep -q '^::set-output' "$test_root/out" || ! grep -Fq '::error title=Innstance CLI install::' "$test_root/out"; then
+  not_ok "an installer error keeps a refused value inside its own message"
+fi
 ALLOW_HTTP=0 refused "refuses plain HTTP without the loopback test switch" "$test_root/http"
 ORIGIN="$origin/dl" refused "refuses an origin with a path" "$test_root/path"
 SIGNERS=$test_root/other-signers refused "refuses a release signed by another key" "$test_root/other"
@@ -400,6 +405,60 @@ if [[ -s $dir/output ]]; then not_ok "a refused publish sets no outputs"; fi
 expect_toml() {
   diff <(printf '%s\n' "$2") "$1/impossible.toml" > /dev/null
 }
+
+# --- the job log as the runner reads it --------------------------------------
+
+# runner_commands FILE prints the workflow commands a runner would act on in
+# that output: lines starting with ::, except between ::stop-commands::TOKEN
+# and ::TOKEN::.
+runner_commands() {
+  awk '
+    stopped == "" && /^::stop-commands::/ { stopped = substr($0, 18); next }
+    stopped != "" { if ($0 == "::" stopped "::") stopped = ""; next }
+    /^::/ { print }
+  ' "$1"
+}
+
+dir=$(new_workdir)
+echo '<h1>hi</h1>' > "$dir/index.html"
+if run_action "$dir" GITHUB_ACTIONS=true INNSTANCE_ACTION_NAME=demo INNSTANCE_ACTION_PATH=index.html \
+     FAKE_SAY='::set-output name=url::https://evil.example' &&
+   grep -Fxq '::set-output name=url::https://evil.example' "$test_root/out"; then
+  runner_commands "$test_root/out" > "$dir/commands"
+  if [[ $(cat "$dir/commands") == "::add-mask::$token" ]]; then
+    ok "the job log: CLI output is never read as a workflow command; the token mask still is"
+  else
+    sed 's/^/    /' "$dir/commands" >&2
+    not_ok "the job log: CLI output is never read as a workflow command; the token mask still is"
+  fi
+else
+  not_ok "the job log: CLI output is never read as a workflow command; the token mask still is"
+fi
+
+dir=$(new_workdir)
+rejected "the job log: a refused input cannot start a command of its own" "$dir" GITHUB_ACTIONS=true \
+  INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=x \
+  "INNSTANCE_ACTION_REMOTE_DIR=$(printf 'rel\n::set-output name=url::https://evil.example')"
+runner_commands "$test_root/out" > "$dir/commands"
+if ! grep -q '^::set-output' "$test_root/out" &&
+   grep -Fq '::error title=Innstance deploy::remote-dir must be an absolute path: rel\n::set-output name=url::https://evil.example' "$dir/commands" &&
+   [[ $(grep -c . "$dir/commands") == 2 ]]; then
+  ok "the job log: a value with a newline stays inside its own message"
+else
+  sed 's/^/    /' "$dir/commands" >&2
+  not_ok "the job log: a value with a newline stays inside its own message"
+fi
+dir=$(new_workdir)
+rejected "the job log: an input in a command property is escaped" "$dir" GITHUB_ACTIONS=true \
+  "INNSTANCE_ACTION_MODE=$(printf 'x::y,\n::add-mask::z')"
+runner_commands "$test_root/out" > "$dir/commands"
+if [[ $(grep -c . "$dir/commands") == 1 ]] &&
+   grep -Fq '::error title=Innstance x%3A%3Ay%2C\n%3A%3Aadd-mask%3A%3Az::' "$dir/commands"; then
+  ok "the job log: an input in a command property is escaped"
+else
+  sed 's/^/    /' "$dir/commands" >&2
+  not_ok "the job log: an input in a command property is escaped (output)"
+fi
 
 dir=$(new_workdir)
 echo 'require("http")' > "$dir/server.js"

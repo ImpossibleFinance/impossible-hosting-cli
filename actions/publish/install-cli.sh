@@ -16,11 +16,18 @@ allowed_signers=${2:?$usage}
 install_dir=${3:?$usage}
 expected_build_id=${4:-}
 
+# A message can carry an input that is refused for its shape, so it is kept
+# to one line and escaped as command data: no value can start a workflow
+# command of its own.
 fail() {
+  local message=$*
+  message=${message//$'\r'/\\r}
+  message=${message//$'\n'/\\n}
+  message=${message//[[:cntrl:]]/?}
   if [[ ${GITHUB_ACTIONS:-} == true ]]; then
-    echo "::error title=Innstance CLI install::$*"
+    echo "::error title=Innstance CLI install::${message//%/%25}"
   fi
-  echo "$*; nothing was installed." >&2
+  echo "$message; nothing was installed." >&2
   exit 1
 }
 

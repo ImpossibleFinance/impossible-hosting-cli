@@ -249,6 +249,12 @@ public repositories.
 Inputs reach the action's scripts only as environment variables. No input
 value is placed inside shell code.
 
+Nothing the CLI prints, and nothing it relays from the VM, can run a
+workflow command such as `::set-output` or `::add-mask`: the action pauses
+command processing with `::stop-commands::` while that output is printed.
+Its own messages are escaped, so an input it refuses stays inside the
+message that refuses it.
+
 ## Runners
 
 GitHub-hosted Linux and macOS runners work as they are. A self-hosted
