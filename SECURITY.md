@@ -64,6 +64,37 @@ new key, then deliberately replacing this repository's anchor. Never accept an
 unsigned transition or reset the checkpoint merely to make a rollback alarm
 pass.
 
+## The `innstance` npm package
+
+`npm/innstance` is a separate trust path from the signed CLI channel above.
+It never downloads, verifies or runs the CLI binary. Its trust properties:
+
+- **Publishing.** The package is published only by
+  `.github/workflows/npm-publish.yml`, through npm trusted publishing with
+  provenance. The workflow runs only for an `npm-v<version>` tag on a commit
+  already on `main`, and only after a maintainer enables it (see
+  `npm/innstance/RELEASING.md`). No npm token is stored in this repository.
+- **Contents.** The package has no dependencies, no install scripts and no
+  native code. Tests enforce this, and CI checks the tarball's file list.
+- **Skill pin.** The skill is installed from one pinned commit of the public
+  skill repository. Each file is checked against a SHA-256 pinned in
+  `lib/skill-pin.json`. Because those hashes ship in a provenance-attested
+  package rather than beside the files they describe, a change to the skill
+  repository cannot alter what a published version installs.
+- **Credentials.** The token is the control plane's per-device session
+  (`cli-npx-<os>-<host>-<id>`), separate from the Go CLI's session. It is
+  written owner-only (`0600`) into the agent configs and
+  `~/.impossible/npx-session.json`. It is never printed, never sent to an
+  origin other than the one that issued it, and never sent across a redirect.
+  The approval URL from the device flow must be `<origin>/auth/device`
+  exactly, or the package does not open or print it.
+
+Whoever controls the npm package's trusted-publisher configuration, or the
+`main` branch and tag rules of this repository, can publish a malicious
+version. Changes to the publish workflow, the skill pin, and the package's
+network or file-writing code need the same CODEOWNER review as the release
+trust material.
+
 ## Reporting a vulnerability
 
 Do not disclose a suspected release compromise in a public issue. Contact the
