@@ -86,4 +86,9 @@ jobs:
           set -euo pipefail
           test -n "$BUILD_ID"
           test "$(innstance --version)" = "innstance version $BUILD_ID"
-          test "$(ifhost --version 2>/dev/null)" = "ifhost version $BUILD_ID"
+          # On Linux the CLI names itself after the file a link resolves to,
+          # so ifhost prints "innstance version ..." there. What matters is
+          # that ifhost is a link to the same verified build.
+          test "$(readlink "$(command -v ifhost)")" = innstance
+          ifhost_version=$(ifhost --version 2>/dev/null)
+          test "${ifhost_version##* }" = "$BUILD_ID"
