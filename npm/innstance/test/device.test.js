@@ -111,7 +111,7 @@ test('signIn backs off when rate limited and gives up at the grant expiry', asyn
     waits.push(ms);
     clock += ms;
   };
-  await assert.rejects(signIn(ctx, server.origin, 'npx-mac-a1b2'), /timed out/);
+  await assert.rejects(signIn(ctx, server.origin, 'npx-mac-a1b2'), /timed out.*limit of signed-in machines: revoke an old session at http:\/\/127\.0\.0\.1:\d+\/dashboard/);
   assert.deepEqual(waits.slice(0, 3), [1000, 6000, 11000]);
   assert.ok(clock <= 30000);
 });

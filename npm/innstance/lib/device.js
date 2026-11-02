@@ -102,7 +102,13 @@ async function signIn(ctx, origin, name) {
   let failures = 0;
   for (;;) {
     if (ctx.now() + wait > deadline) {
-      throw new Error('sign-in timed out; run npx innstance again');
+      // The server cannot say why an approval did not arrive. The likeliest
+      // cause after the person did approve is the account's limit on
+      // signed-in machines: the browser shows an error and the grant goes
+      // back to pending, so this side only ever sees "pending".
+      throw new Error(
+        `sign-in timed out; run npx innstance again. If you approved and the browser showed an error, your account may have reached its limit of signed-in machines: revoke an old session at ${origin}/dashboard first`,
+      );
     }
     await ctx.sleep(wait);
     try {
