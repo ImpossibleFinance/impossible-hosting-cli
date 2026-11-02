@@ -56,3 +56,10 @@ test('the entry point is executable through npx', () => {
     assert.ok(fs.statSync(path.join(root, pkg.bin.innstance)).mode & 0o111, 'bin/innstance.js must be executable');
   }
 });
+
+test('the repository checks the package out with LF endings everywhere', () => {
+  // Without this a Windows checkout (core.autocrlf) turns the shebang line
+  // into "node\r", which the test above catches and POSIX shells cannot run.
+  const attributes = fs.readFileSync(path.join(root, '..', '..', '.gitattributes'), 'utf8');
+  assert.match(attributes, /^npm\/\*\* .*\beol=lf\b/m);
+});

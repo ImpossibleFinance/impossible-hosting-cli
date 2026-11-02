@@ -1,0 +1,5 @@
+# The npm package ships to every platform from whatever machine packs it, and
+# its entry point starts with a "#!/usr/bin/env node" line that POSIX shells
+# cannot run with a CRLF ending. Keep it LF on every checkout, including
+# Windows ones where core.autocrlf would otherwise convert it.
+npm/** text=auto eol=lf
