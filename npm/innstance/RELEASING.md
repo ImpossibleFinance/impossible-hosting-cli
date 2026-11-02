@@ -10,17 +10,20 @@ npm token is stored in this repository or its secrets.
 Provenance requires a public source repository. That is why the package lives
 here and not in the private platform repository.
 
-## Before this package is merged or pushed anywhere public
+## Before this package is merged
 
-1. **Claim the name first.** This repository is public, and its READMEs tell
-   people to run `npx innstance`. `innstance` was unclaimed on the registry
-   when this package was written (and so was `innstance-setup`). Whoever
-   registers it first has their code run by everyone who follows those
-   instructions, with access to the home directory and its agent configs.
-   So before the branch is pushed or merged, publish a placeholder `0.0.0`
+1. **Claim the name first.** This repository is public, and once merged its
+   READMEs tell people to run `npx innstance`. `innstance` was unclaimed on
+   the registry when this package was written (and so was `innstance-setup`).
+   Whoever registers it first has their code run by everyone who follows
+   those instructions, with access to the home directory and its agent
+   configs. So before the branch is merged, publish a placeholder `0.0.0`
    that holds only a README, by hand, from a company-owned npm account or
    organisation with two-factor authentication. Do not use a personal
-   account.
+   account. Do it as soon as possible, not just before merging: the name
+   is already guessable from the product and its CLI, and an open pull
+   request makes the plan visible, even though GitHub's code search
+   indexes only the default branch.
 2. **Decide the token model before the first real release.** The approved
    plan says new tokens are scoped and MCP tokens expire after 30 days (A2,
    then MCP OAuth in A6). This package uses the only credential the device
