@@ -33,6 +33,10 @@ Vercel Sandbox) first, see [From any sandbox to your domain](../../docs/sandbox-
        branches: [main]
    permissions:
      contents: read
+   # One run at a time per site; see "Run one deploy at a time".
+   concurrency:
+     group: innstance-q3-report
+     cancel-in-progress: false
    jobs:
      publish:
        runs-on: ubuntu-latest
@@ -112,17 +116,33 @@ single-page app that routes on the client needs a server that sends
 ## Deploy an app
 
 ```yaml
-- uses: ImpossibleFinance/impossible-hosting-cli/actions/publish@<commit-sha>
-  with:
-    token: ${{ secrets.INNSTANCE_TOKEN }}
-    mode: deploy
-    name: my-api
-    path: .
-    port: 3000
-    packages: nodejs npm
-    start-command: npm ci --omit=dev && exec node server.js
-    health-path: /healthz
-    domain: api.example.com
+name: deploy
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: innstance-my-api
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ImpossibleFinance/impossible-hosting-cli/actions/publish@<commit-sha>
+        with:
+          token: ${{ secrets.INNSTANCE_TOKEN }}
+          mode: deploy
+          name: my-api
+          path: .
+          port: 3000
+          packages: nodejs npm
+          start-command: npm ci --omit=dev && exec node server.js
+          health-path: /healthz
+          domain: api.example.com
 ```
 
 The action runs these steps, in this order:
@@ -163,6 +183,40 @@ foreground: a command that daemonizes (`nginx` with its default
 fails. Use `nginx -g 'daemon off;'`, `pm2-runtime`, or `exec node server.js`.
 Without `start-command`, the files are pushed and nothing is started.
 
+### Run one deploy at a time
+
+Give every workflow that deploys an app a `concurrency` group named after
+the app, with `cancel-in-progress: false`, as in the example above. Each
+deploy restarts the VM, so a second run that starts while the first is
+still installing, pushing or starting restarts the VM under it: the first
+run's install is killed, its push fails part-way, or its process is lost
+while the step still ends green. `cancel-in-progress: false` queues the
+second run instead of cancelling the first in the middle of a push.
+
+### What deploy mode does not do
+
+- **Nothing restarts the app.** The process runs until the VM restarts:
+  the next deploy, a change to the app's secrets or environment that
+  restarts it, the platform moving or replacing the machine, or the VM
+  running out of memory. After that the app stays down until this workflow
+  runs again; re-run it, or add a `schedule` trigger. The CLI's own
+  `innstance deploy --help` says the same.
+- **It does not size the VM.** Set memory in a committed `impossible.toml`
+  (`[resources] memory_mb = 1024`). Node and Python apps often need
+  512 MB to 1 GB, and `npm ci` inside `start-command` uses memory before
+  the server starts; at 256 MB the VM can run out of memory.
+- **It installs `packages` on every run**, after each restart.
+
+### Deploying what a sandbox or an agent produced
+
+An `impossible.toml` in the working directory is applied as it is: its
+`[resources]`, `[env]`, `[volumes]`, region, and `[secrets]` references.
+A reference such as `@env:IMPOSSIBLE_API_TOKEN` would copy the account
+token into the app, where the app's code can read it. So keep
+`working-directory` on your own checkout, never on files an agent or a
+sandbox wrote, and point `path` at their output. Push never uploads an
+`impossible.toml`, so one inside `path` has no effect.
+
 ## Custom domains
 
 Set `domain` to attach a hostname to the site or app. Your plan must
@@ -175,6 +229,9 @@ include custom domains.
   attached, and `domain-status` becomes `active`, or `pending_certificate`
   for the minutes until its certificate is issued.
 - **Later runs:** the action only checks a domain that is already attached.
+  The step fails only when the check gives no answer at all; a domain
+  whose certificate is still pending, or whose `/` does not answer 200,
+  is reported in `domain-status` instead.
 
 Diagnose a domain from your machine with
 `innstance sites domains check <site> <hostname>` or
@@ -254,8 +311,12 @@ It could still serve an older release made after that checkpoint. Set
 
 - The token goes only to the publish or deploy step. The install step and
   later steps do not get it.
-- The action masks the token in the log, even when it comes from another
-  step's output rather than a secret.
+- Pass the token from a secret, as `${{ secrets.INNSTANCE_TOKEN }}`. GitHub
+  prints a step's inputs in the job log before the step runs, and masks
+  only values it already knows are secret. A token made in an earlier step
+  must be masked in that step, with `echo "::add-mask::$TOKEN"`, before it
+  is passed here; otherwise it appears in the log in clear text, and the
+  log of a public repository is public.
 - Use a dedicated token with an expiry. Revoke it with
   `innstance tokens revoke <id>`.
 - GitHub gives no secrets to workflows triggered by pull requests from

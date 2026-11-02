@@ -71,8 +71,17 @@ release: between the checkpoint and the live release an origin could still
 serve an older signed build. A workflow that must run one exact build sets
 `cli-build-id`.
 
-The account token goes only to the publish or deploy step. The action
-masks it in the log, and later steps never receive it.
+The account token goes only to the publish or deploy step, and later steps
+never receive it. It must arrive as a GitHub secret, or be masked in the
+step that produced it: the runner prints a step's inputs in the log before
+the action runs, so the action's own mask covers only what follows.
+
+The install script is a third reader of the signed record, after /install
+and `scripts/verify-channel.sh`. Like /install it holds only the fields it
+uses to a strict format, so a record that grows new fields still installs.
+The scheduled `live-install` job installs the live release through it, so
+a release record it can no longer read turns that job red before users
+notice.
 
 A workflow pinned to a commit keeps that commit's key. After a key
 rotation, those workflows fail closed until they move to a commit that
