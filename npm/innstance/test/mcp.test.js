@@ -26,6 +26,7 @@ test('probeMCP reports what an agent would find at the endpoint', async (t) => {
     assert.equal(got.state, c.state, c.name);
     assert.match(got.detail, c.detail, c.name);
     if (c.deletes) assert.equal(server.state.mcpDeletes, c.deletes, `${c.name}: the probe session is closed`);
+    if (c.state === 'ok') assert.deepEqual(server.state.mcpClients, ['innstance-npx-probe'], `${c.name}: metrics can tell a probe apart`);
     await server.close();
   }
 });

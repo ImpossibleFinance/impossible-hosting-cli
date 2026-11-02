@@ -33,11 +33,12 @@ function defaultContext() {
 
 // openBrowser opens the approval page. The URL has already been checked to be
 // <control plane>/auth/device?code=..., and it is passed as one argument with
-// no shell in between. On Windows that rules out `cmd /c start`, where "&" in
-// a URL would start a second command; rundll32's URL handler takes the URL
-// as data, the same choice the Go CLI made. Failure is quiet: the link is
-// printed either way, and a headless machine simply has no browser.
-function openBrowser(rawURL, platform, env) {
+// no shell in between. On Windows that is explorer.exe, which hands a URL to
+// the default browser: not `cmd /c start`, where a shell parses the line, and
+// not rundll32's url.dll handler, a pattern endpoint protection flags.
+// Failure is quiet: the link is printed either way, and a headless machine
+// simply has no browser. spawnFn exists for the tests.
+function openBrowser(rawURL, platform, env, spawnFn = spawn) {
   let u;
   try {
     u = new URL(rawURL);
@@ -46,23 +47,19 @@ function openBrowser(rawURL, platform, env) {
   }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
   let command;
-  let args;
   switch (platform) {
     case 'darwin':
       command = 'open';
-      args = [u.toString()];
       break;
     case 'win32':
-      command = 'rundll32';
-      args = ['url.dll,FileProtocolHandler', u.toString()];
+      command = 'explorer.exe';
       break;
     default:
       if (!env.DISPLAY && !env.WAYLAND_DISPLAY) return false;
       command = 'xdg-open';
-      args = [u.toString()];
   }
   try {
-    const child = spawn(command, args, { stdio: 'ignore', detached: true, windowsHide: true });
+    const child = spawnFn(command, [u.toString()], { stdio: 'ignore', detached: true, windowsHide: true });
     child.on('error', () => {});
     child.unref();
     return true;

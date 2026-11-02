@@ -83,6 +83,7 @@ async function startFakeServer(overrides = {}) {
     polls: 0,
     logouts: 0,
     mcpDeletes: 0,
+    mcpClients: [], // clientInfo.name of each initialize
     requests: [],
     skillFiles: skill.files,
     skillPin: skill.pin,
@@ -154,6 +155,7 @@ async function startFakeServer(overrides = {}) {
         return res.end();
       }
       const message = JSON.parse(body);
+      state.mcpClients.push(message.params && message.params.clientInfo && message.params.clientInfo.name);
       const reply = {
         jsonrpc: '2.0',
         id: message.id,

@@ -20,6 +20,7 @@ const { version } = require('../package.json');
 // closed again with DELETE so it does not linger.
 
 const PROTOCOL_VERSION = '2025-06-18';
+const PROBE_CLIENT_NAME = 'innstance-npx-probe';
 
 function initializeRequest() {
   return {
@@ -29,7 +30,10 @@ function initializeRequest() {
     params: {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: 'innstance-npx', version },
+      // A distinct name, so MCP session and funnel metrics that count
+      // sessions by clientInfo can leave these probes out: every setup and
+      // doctor run opens one, and none of them will ever publish anything.
+      clientInfo: { name: PROBE_CLIENT_NAME, version },
     },
   };
 }
@@ -115,4 +119,4 @@ async function probeMCP(mcpURL, token, { timeoutMs = 15000 } = {}) {
   return { state: 'ok', detail: name ? `initialized (${name.replace(/[\u0000-\u001f\u007f]/g, '')})` : 'initialized' };
 }
 
-module.exports = { probeMCP, firstResponse, PROTOCOL_VERSION };
+module.exports = { probeMCP, firstResponse, PROTOCOL_VERSION, PROBE_CLIENT_NAME };
