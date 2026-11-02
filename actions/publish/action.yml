@@ -112,7 +112,7 @@ runs:
       env:
         INNSTANCE_ACTION_API_URL: ${{ inputs.api-url }}
         INNSTANCE_ACTION_CLI_BUILD_ID: ${{ inputs.cli-build-id }}
-      run: bash "$GITHUB_ACTION_PATH/install-cli.sh" "${INNSTANCE_ACTION_API_URL:-https://innstance.impossibuild.ai}" "$GITHUB_ACTION_PATH/../../release-signers" "$RUNNER_TEMP/innstance-cli" "$INNSTANCE_ACTION_CLI_BUILD_ID"
+      run: bash "$GITHUB_ACTION_PATH/install-cli.sh" "${INNSTANCE_ACTION_API_URL:-https://innstance.impossibuild.ai}" "$GITHUB_ACTION_PATH/../../release-signers" "$GITHUB_ACTION_PATH/../../channel-state.json" "$RUNNER_TEMP/innstance-cli" "$INNSTANCE_ACTION_CLI_BUILD_ID"
 
     - name: Publish or deploy
       id: run

@@ -143,7 +143,8 @@ run_install() {
   shift
   GITHUB_ACTIONS=${IN_ACTIONS:-} GITHUB_OUTPUT=$dir.output GITHUB_PATH=$dir.path GITHUB_ENV=$dir.env \
     INNSTANCE_ACTION_ALLOW_HTTP=${ALLOW_HTTP:-1} \
-    bash "$action/install-cli.sh" "${ORIGIN:-$origin}" "${SIGNERS:-$test_root/release-signers}" "$dir" "$@"
+    bash "$action/install-cli.sh" "${ORIGIN:-$origin}" "${SIGNERS:-$test_root/release-signers}" \
+    "${CHANNEL_STATE:-$repo_root/channel-state.json}" "$dir" "$@"
 }
 # refused NAME INSTALL_DIR [ARGS...] passes when the install fails and
 # leaves nothing behind.
@@ -202,6 +203,26 @@ cat "$test_root/release-signers" "$test_root/other-signers" > "$test_root/two-si
 SIGNERS=$test_root/two-signers refused "refuses a signers file that trusts two keys" "$test_root/two"
 sed 's/^ifhost /someone /' "$test_root/release-signers" > "$test_root/wrong-identity"
 SIGNERS=$test_root/wrong-identity refused "refuses a signer under another identity" "$test_root/identity"
+
+# channel_state BUILD_ID writes a checkpoint shaped like channel-state.json.
+channel_state() {
+  printf '{\n  "schema": 1,\n  "build_id": "%s",\n  "source_commit": "%s",\n  "release_sha256": "%064d"\n}\n' \
+    "$1" "$commit" 0 > "$test_root/state.json"
+  printf '%s' "$test_root/state.json"
+}
+CHANNEL_STATE=$(channel_state "20261101-000001") \
+  refused "refuses a signed release older than the pinned channel checkpoint" "$test_root/rollback"
+grep -Fq 'release rollback detected' "$test_root/out" || not_ok "a rollback is named as one"
+CHANNEL_STATE=$(channel_state "20261101-000000") \
+  refused "refuses a signed release that reuses the checkpoint's build time" "$test_root/reused"
+if CHANNEL_STATE=$(channel_state "$build") run_install "$test_root/at-floor" > "$test_root/out" 2>&1; then
+  ok "accepts the release the checkpoint names"
+else
+  not_ok "accepts the release the checkpoint names"
+fi
+CHANNEL_STATE=$test_root/missing-state.json refused "refuses to install without a channel checkpoint" "$test_root/no-state"
+printf '{"build_id": "latest"}\n' > "$test_root/bad-state.json"
+CHANNEL_STATE=$test_root/bad-state.json refused "refuses a channel checkpoint without a build ID" "$test_root/bad-state"
 
 publish_release "20261101-000000-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "$commit" "innstance ifhost"
 refused "refuses a build ID whose commit disagrees with source_commit" "$test_root/unbound"

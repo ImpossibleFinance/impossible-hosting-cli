@@ -5,16 +5,19 @@
 # both pass.
 #
 # The trust anchor is the release-signers file at the commit the workflow
-# pinned, not a key the release origin serves. An origin that is compromised
-# can replay an older signed release, but it cannot swap the key along with
-# the binary. Pin cli-build-id to refuse anything but one exact release.
+# pinned, not a key the release origin serves, so an origin that is
+# compromised cannot swap the key along with the binary. The same commit's
+# channel-state.json is the oldest release it accepts: an origin can still
+# replay an older signed release, but not one from before that checkpoint.
+# Pin cli-build-id to refuse anything but one exact release.
 set -euo pipefail
 
-usage='usage: install-cli.sh RELEASE_ORIGIN ALLOWED_SIGNERS INSTALL_DIR [EXPECTED_BUILD_ID]'
+usage='usage: install-cli.sh RELEASE_ORIGIN ALLOWED_SIGNERS CHANNEL_STATE INSTALL_DIR [EXPECTED_BUILD_ID]'
 origin=${1:?$usage}
 allowed_signers=${2:?$usage}
-install_dir=${3:?$usage}
-expected_build_id=${4:-}
+channel_state=${3:?$usage}
+install_dir=${4:?$usage}
+expected_build_id=${5:-}
 
 # A message can carry an input that is refused for its shape, so it is kept
 # to one line and escaped as command data: no value can start a workflow
@@ -75,6 +78,14 @@ signer_lines=$(awk 'NF { n++ } END { print n + 0 }' "$allowed_signers")
 [[ $signer_lines -eq 1 ]] || fail "release-signers must contain exactly one signer"
 awk 'NF { exit !($1 == "ifhost" && $2 == "ssh-ed25519" && NF == 3) }' "$allowed_signers" ||
   fail "release-signers must name one ifhost ssh-ed25519 key"
+
+# The accepted checkpoint the audit keeps (scripts/verify-channel.sh). Read
+# its build ID by a pattern rather than with a JSON parser, which a
+# self-hosted runner may not have, and insist on exactly one.
+test -f "$channel_state" || fail "missing channel-state.json: $channel_state"
+floor_build_id=$(sed -n 's/^[[:space:]]*"build_id"[[:space:]]*:[[:space:]]*"\([^"]*\)"[[:space:]]*,\{0,1\}[[:space:]]*$/\1/p' "$channel_state")
+[[ $floor_build_id =~ $build_pattern && $floor_build_id != *$'\n'* ]] ||
+  fail "channel-state.json must name one release build ID"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
@@ -137,6 +148,17 @@ if [[ $build_id == *-*-* && $source_commit != "${build_id##*-}"* ]]; then
 fi
 if [[ -n $expected_build_id && $build_id != "$expected_build_id" ]]; then
   fail "the live release is $build_id, but cli-build-id pins $expected_build_id"
+fi
+# A build ID starts with its UTC build time, YYYYMMDD-HHMMSS, so equal-length
+# stamps order as strings. The audit's rules: never older than the
+# checkpoint, and one time names one release.
+stamp=${build_id:0:15}
+floor_stamp=${floor_build_id:0:15}
+if [[ $stamp < $floor_stamp ]]; then
+  fail "release rollback detected: the live release $build_id is older than $floor_build_id in channel-state.json"
+fi
+if [[ $stamp == "$floor_stamp" && $build_id != "$floor_build_id" ]]; then
+  fail "the live release $build_id reuses the build time of $floor_build_id in channel-state.json"
 fi
 
 # Releases carry innstance_* archives; a channel from before the rename only

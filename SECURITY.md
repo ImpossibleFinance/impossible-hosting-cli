@@ -64,8 +64,12 @@ origin. Then it checks the archive against the signed SHA-256 and requires
 exactly one regular file in the archive. It runs the binary only after all
 of that passes.
 
-Like the installer, it cannot tell the newest signed release from an older
-one. A workflow that must run one exact build sets `cli-build-id`.
+It also refuses a signed release older than the checkpoint in
+`channel-state.json` at the same commit, by the audit's rules: a later build
+time, and one release per build time. That is a floor, not the newest
+release: between the checkpoint and the live release an origin could still
+serve an older signed build. A workflow that must run one exact build sets
+`cli-build-id`.
 
 The account token goes only to the publish or deploy step. The action
 masks it in the log, and later steps never receive it.

@@ -219,9 +219,11 @@ it runs the CLI:
 4. It checks the downloaded archive against the SHA-256 in that record.
 5. It checks that the archive holds exactly one regular file.
 
-A compromised release origin cannot swap the key along with the binary. It
-could still serve an older signed release. Set `cli-build-id` if a workflow
-must run one exact build.
+A compromised release origin cannot swap the key along with the binary.
+Nor can it serve a signed release older than the checkpoint in
+[`channel-state.json`](../../channel-state.json) at the commit you pinned.
+It could still serve an older release made after that checkpoint. Set
+`cli-build-id` if a workflow must run one exact build.
 
 ### The token
 
