@@ -54,8 +54,17 @@ test('usage errors exit 2 without touching the network', async (t) => {
   assert.equal(await main(['--server', 'http://evil.example'], ctx), 2);
 });
 
+test('a command of the full CLI says where that CLI comes from', async (t) => {
+  for (const argv of [['deploy'], ['status', '--json'], ['login']]) {
+    const { ctx, err } = makeContext(tempHome(t), null);
+    assert.equal(await main(argv, ctx), 2, argv.join(' '));
+    assert.match(err.join('\n'), new RegExp(`unknown command "${argv[0]}"`));
+    assert.match(err.join('\n'), /only signs in and connects agents.*full innstance CLI.*separate install: https:\/\/innstance\.impossibuild\.ai\/docs/s);
+  }
+});
+
 test('the published entry point runs with plain node', () => {
-  const bin = path.join(__dirname, '..', 'bin', 'innstance.js');
+  const bin = path.join(__dirname, '..', 'bin', 'innstance-setup.js');
   const res = spawnSync(process.execPath, [bin, '--version'], { encoding: 'utf8' });
   assert.equal(res.status, 0, res.stderr);
   assert.equal(res.stdout.trim(), version);

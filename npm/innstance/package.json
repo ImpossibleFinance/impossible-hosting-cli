@@ -10,7 +10,7 @@
     "directory": "npm/innstance"
   },
   "bin": {
-    "innstance": "bin/innstance.js"
+    "innstance-setup": "bin/innstance-setup.js"
   },
   "files": [
     "bin/",

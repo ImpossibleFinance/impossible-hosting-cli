@@ -26,12 +26,18 @@ Options
   -v, --version      print the version
 
 This package only signs in and connects agents; it contains no native binary.
-The full innstance CLI (deploy, logs, domains, ...) is a separate install:
-${DEFAULT_ORIGIN}/docs`;
+Installed globally (npm i -g innstance) its command is innstance-setup; the
+name innstance belongs to the full innstance CLI (deploy, logs, domains, ...),
+which is a separate, signed install: ${DEFAULT_ORIGIN}/docs`;
 
 const COMMANDS = new Set(['setup', 'doctor', 'remove', 'uninstall', 'help', 'version']);
 
-class UsageError extends Error {}
+class UsageError extends Error {
+  constructor(message, { unknownCommand = false } = {}) {
+    super(message);
+    this.unknownCommand = unknownCommand;
+  }
+}
 
 function parseArgs(argv) {
   const opts = { command: 'setup', agents: null, server: '', browser: true, relogin: false, skipMcpCheck: false, force: false };
@@ -88,7 +94,7 @@ function parseArgs(argv) {
         break;
       default:
         if (arg.startsWith('-')) throw new UsageError(`unknown option ${arg}`);
-        if (commandSeen || !COMMANDS.has(arg)) throw new UsageError(`unknown command ${JSON.stringify(arg)}`);
+        if (commandSeen || !COMMANDS.has(arg)) throw new UsageError(`unknown command ${JSON.stringify(arg)}`, { unknownCommand: !COMMANDS.has(arg) });
         commandSeen = true;
         opts.command = arg === 'uninstall' ? 'remove' : arg;
     }
@@ -103,6 +109,12 @@ async function main(argv, ctx = defaultContext()) {
   } catch (err) {
     if (!(err instanceof UsageError)) throw err;
     ctx.err(`innstance: ${err.message}`);
+    if (err.unknownCommand) {
+      // Most likely a command of the full CLI, run through this package by
+      // mistake (or by an agent following the skill).
+      ctx.err('This is npx innstance, which only signs in and connects agents. The full innstance CLI');
+      ctx.err(`(deploy, logs, domains, ...) is a separate install: ${DEFAULT_ORIGIN}/docs`);
+    }
     ctx.err('Run npx innstance --help for usage.');
     return 2;
   }

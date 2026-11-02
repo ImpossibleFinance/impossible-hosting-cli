@@ -28,7 +28,11 @@ test('the package has no dependencies and runs no install scripts', () => {
     assert.equal(pkg.scripts[hook], undefined, hook);
   }
   assert.equal(pkg.name, 'innstance');
-  assert.deepEqual(pkg.bin, { innstance: 'bin/innstance.js' });
+  // One bin, deliberately not called "innstance": npx runs a package's only
+  // bin whatever its name, so `npx innstance` works, while `npm i -g
+  // innstance` cannot put a shim named innstance ahead of the signed CLI on
+  // PATH.
+  assert.deepEqual(pkg.bin, { 'innstance-setup': 'bin/innstance-setup.js' });
   assert.equal(pkg.engines.node, '>=18');
   assert.deepEqual(pkg.files, ['bin/', 'lib/', 'README.md']);
   // npm provenance ties the published tarball to this repository and path.
@@ -50,10 +54,11 @@ test('shipped code is JavaScript that requires only Node built-ins and itself', 
 });
 
 test('the entry point is executable through npx', () => {
-  const bin = fs.readFileSync(path.join(root, pkg.bin.innstance), 'utf8');
+  const entry = path.join(root, pkg.bin['innstance-setup']);
+  const bin = fs.readFileSync(entry, 'utf8');
   assert.ok(bin.startsWith('#!/usr/bin/env node\n'));
   if (process.platform !== 'win32') {
-    assert.ok(fs.statSync(path.join(root, pkg.bin.innstance)).mode & 0o111, 'bin/innstance.js must be executable');
+    assert.ok(fs.statSync(entry).mode & 0o111, `${pkg.bin['innstance-setup']} must be executable`);
   }
 });
 
