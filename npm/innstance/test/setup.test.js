@@ -34,7 +34,7 @@ function tokensIn(home) {
   const codex = fs.existsSync(p.codex) ? toml.readServer(fs.readFileSync(p.codex, 'utf8'), 'innstance') : null;
   return {
     claude: read(p.claude, ['mcpServers', 'innstance']),
-    codex: codex ? bearer(codex.http_headers.Authorization) : undefined,
+    codex: codex && codex.http_headers ? bearer(codex.http_headers.Authorization) : undefined,
     cursor: read(p.cursor, ['mcpServers', 'innstance']),
     opencode: read(p.opencode, ['mcp', 'innstance']),
   };
@@ -190,6 +190,46 @@ test('setup leaves an innstance entry it did not write unless --force', async (t
   assert.equal(await main(['--agents', 'cursor', '--force'], forced.ctx), 0, forced.text());
   assert.deepEqual(readJSON(p.cursor).mcpServers.innstance, { url: server.origin + '/mcp', headers: { Authorization: `Bearer ${savedSession(forced.ctx).token}` } });
   assert.match(forced.text(), /replaced the "innstance" entry \(--force\)/);
+});
+
+test('an entry that reads its token from an environment variable is left as it is', async (t) => {
+  const server = await startFakeServer();
+  t.after(server.close);
+  const home = tempHome(t);
+  const p = configPaths(home);
+  const mcp = server.origin + '/mcp';
+  fs.mkdirSync(path.dirname(p.cursor), { recursive: true });
+  fs.mkdirSync(path.dirname(p.codex), { recursive: true });
+  const cursor = `{"mcpServers": {"innstance": {"url": "${mcp}", "headers": {"Authorization": "Bearer \${env:INNSTANCE_TOKEN}"}}}}\n`;
+  const codex = `[mcp_servers.innstance]\nurl = "${mcp}"\nbearer_token_env_var = "INNSTANCE_TOKEN"\n`;
+  fs.writeFileSync(p.cursor, cursor);
+  fs.writeFileSync(p.codex, codex);
+
+  const first = makeContext(home, server, { agents: ['cursor', 'codex', 'claude'] });
+  assert.equal(await main([], first.ctx), 0, first.text());
+  assert.equal(fs.readFileSync(p.cursor, 'utf8'), cursor, 'no literal token is written over the reference');
+  assert.equal(fs.readFileSync(p.codex, 'utf8'), codex);
+  assert.match(first.out.join('\n'), /Cursor: left .*mcp\.json as it is: .*environment variable/);
+  assert.match(first.out.join('\n'), /Codex: left .*config\.toml as it is: .*environment variable/);
+  assert.ok(tokensIn(home).claude, 'the other agent is connected');
+
+  // A new sign-in did not end a token this package never wrote, so the
+  // refresh leaves them alone too.
+  const again = makeContext(home, server);
+  assert.equal(await main(['--relogin', '--agents', 'claude'], again.ctx), 0, again.text());
+  assert.equal(fs.readFileSync(p.cursor, 'utf8'), cursor);
+  assert.equal(fs.readFileSync(p.codex, 'utf8'), codex);
+
+  const doctor = makeContext(home, server);
+  assert.equal(await main(['doctor'], doctor.ctx), 0, doctor.text());
+  assert.match(doctor.text(), /ok +Codex: connected in .*token read from an environment variable, not checked/);
+
+  // --force replaces the whole entry, variable and all.
+  const forced = makeContext(home, server);
+  assert.equal(await main(['--agents', 'codex', '--force'], forced.ctx), 0, forced.text());
+  assert.equal(tokensIn(home).codex, savedSession(forced.ctx).token);
+  assert.equal(toml.readServer(fs.readFileSync(p.codex, 'utf8'), 'innstance').bearer_token_env_var, undefined);
+  assert.match(forced.text(), /Codex: replaced the "innstance" entry \(--force\)/);
 });
 
 test('no agent is left holding a token a new sign-in ended', async (t) => {

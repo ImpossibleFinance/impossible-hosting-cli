@@ -67,10 +67,26 @@ function authorizationKeys(headers) {
   return headers && typeof headers === 'object' && !Array.isArray(headers) ? Object.keys(headers).filter((k) => k.toLowerCase() === 'authorization') : [];
 }
 
-function tokenFrom(headers) {
+// An Authorization value can name an environment variable instead of holding
+// the token: ${VAR} for the claude agent, ${env:VAR} for cursor, {env:VAR}
+// for opencode. Someone who set an entry up that way chose to keep the token
+// out of the file, so setup leaves such an entry as it is rather than write a
+// literal token into it.
+const ENV_REFERENCE = /\$\{|\{env:/;
+
+function authorizationValue(headers) {
   const key = authorizationKeys(headers)[0];
-  const m = key && typeof headers[key] === 'string' && /^Bearer\s+(\S+)$/.exec(headers[key]);
+  return key && typeof headers[key] === 'string' ? headers[key] : '';
+}
+
+function tokenFrom(headers) {
+  const value = authorizationValue(headers);
+  const m = !ENV_REFERENCE.test(value) && /^Bearer\s+(\S+)$/.exec(value);
   return m ? m[1] : '';
+}
+
+function tokenFromEnv(headers) {
+  return ENV_REFERENCE.test(authorizationValue(headers));
 }
 
 // describeEntry says, for a message, what an entry that is not ours does.
@@ -110,11 +126,12 @@ function jsonAgent(spec) {
       const doc = jsonc.parse(text || '');
       const entry = jsonc.getAt(doc, spec.jsonPath);
       if (entry === undefined) return null;
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return { url: '', token: '', command: false };
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return { url: '', token: '', command: false, fromEnv: false };
       return {
         url: typeof entry.url === 'string' ? entry.url : '',
         token: tokenFrom(entry.headers),
         command: entry.command !== undefined,
+        fromEnv: tokenFromEnv(entry.headers),
       };
     },
     editEntry(text, url, token) {
@@ -170,10 +187,15 @@ const AGENTS = [
     readEntry(text) {
       const entry = toml.readServer(text || '', SERVER_NAME);
       if (!entry) return null;
+      // codex never expands variables inside http_headers; it reads the
+      // token from the environment through bearer_token_env_var, or an
+      // Authorization line in env_http_headers.
+      const fromEnv = entry.bearer_token_env_var !== undefined || authorizationKeys(entry.env_http_headers).length > 0;
       return {
         url: typeof entry.url === 'string' ? entry.url : '',
-        token: tokenFrom(entry.http_headers),
+        token: fromEnv ? '' : tokenFrom(entry.http_headers),
         command: entry.command !== undefined,
+        fromEnv,
       };
     },
     editEntry(text, url, token) {
@@ -263,6 +285,9 @@ function readMCP(agent, ctx) {
 //              alone unless replaceForeign is set; or the file sits in a git
 //              repository, where the token could be committed, and
 //              allowRepo is not set
+//   external   the entry points at this endpoint but takes its token from
+//              an environment variable; it is left as it is unless
+//              replaceForeign is set, which replaces the whole entry
 //
 // linkedTo names the real file when the config is a symlink, so the person
 // is told where the token went.
@@ -284,8 +309,13 @@ async function writeMCP(agent, ctx, url, token, { replaceForeign = false, allowR
         result = { file, status: 'skipped', detail: `its "innstance" server ${describeEntry(entry)}; re-run with --force to replace it` };
         return;
       }
-      after = ours ? agent.updateEntry(before, url, token) : agent.editEntry(before, url, token);
-      result = { file, status: !entry ? 'added' : !ours ? 'replaced' : after === before ? 'unchanged' : 'updated' };
+      if (ours && entry.fromEnv && !replaceForeign) {
+        result = { file, status: 'external', detail: 'its "innstance" server takes its token from an environment variable; re-run with --force to write the token into the file instead' };
+        return;
+      }
+      const replacing = Boolean(entry) && (!ours || entry.fromEnv);
+      after = entry && !replacing ? agent.updateEntry(before, url, token) : agent.editEntry(before, url, token);
+      result = { file, status: !entry ? 'added' : replacing ? 'replaced' : after === before ? 'unchanged' : 'updated' };
       if (link) result.linkedTo = link;
     } catch (err) {
       throw new Error(`${file} was not changed: ${err.message}`);

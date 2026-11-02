@@ -140,13 +140,14 @@ async function setup(ctx, opts) {
   // whatever the probe said, because the old one is dead either way. Only
   // the url and Authorization lines of those entries change. A reused
   // session changed nothing on the server, so agents not named this time are
-  // left alone.
+  // left alone, and so is an entry that reads its token from an environment
+  // variable: this package never wrote that token, so it did not end it.
   const refresh =
     session && !session.reused
       ? AGENTS.filter((a) => {
           if (writeNew && selected.includes(a)) return false;
           const { entry } = readMCP(a, ctx);
-          return Boolean(entry) && entry.url === mcp && entry.token !== session.token;
+          return Boolean(entry) && entry.url === mcp && !entry.fromEnv && entry.token !== session.token;
         })
       : [];
 
@@ -161,6 +162,10 @@ async function setup(ctx, opts) {
       if (result.status === 'skipped') {
         failures++;
         ctx.err(`  ${agent.name}: left ${where} alone: ${result.detail}`);
+        continue;
+      }
+      if (result.status === 'external') {
+        ctx.out(`  ${agent.name}: left ${where} as it is: ${result.detail}`);
         continue;
       }
       connected.push(agent);

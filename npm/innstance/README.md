@@ -70,7 +70,11 @@ An `innstance` entry that already points at this control plane is updated in
 place: only its `url` and `Authorization` header change, so anything you set
 on it yourself (turning it off, tool approvals, timeouts) is kept. An
 `innstance` entry that points somewhere else, or runs a local command, is left
-alone unless you pass `--force`. If a file can't be read, or defines
+alone unless you pass `--force`. So is an entry that points at this control
+plane but reads its token from an environment variable (`${VAR}`,
+`${env:VAR}`, `{env:VAR}`, or Codex's `bearer_token_env_var` and
+`env_http_headers`): you chose to keep the token out of that file, so setup
+does not write one into it. If a file can't be read, or defines
 `innstance` in a form the tool can't rewrite safely, the tool leaves that file
 untouched, says so, and still sets up the other agents.
 
@@ -104,7 +108,8 @@ root they would end up owned by root, where your agents cannot read them.
   the new token to every agent config that already points at this control
   plane, not just the agents you named, even when it writes no new config.
   No agent is left holding a dead token. When the saved session is reused,
-  agents you did not name are left alone.
+  agents you did not name are left alone, and so is any entry that reads its
+  token from an environment variable.
 * **A limit per account.** Each signed-in machine holds a session that does
   not expire, and the Go CLI's sessions count too. An account can hold 8. A
   fresh home directory (a new laptop, a container, a Codespace) signs in as a

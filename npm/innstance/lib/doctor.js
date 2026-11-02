@@ -122,11 +122,13 @@ async function doctor(ctx, opts) {
       report('warn', agent.name, `its "innstance" server points at ${entry.url || 'nothing'}, not ${mcp}`);
       continue;
     }
-    if (!entry.token) {
+    if (!entry.token && !entry.fromEnv) {
       report('fail', agent.name, `${where} has no bearer token for innstance; run: npx innstance --agents ${agent.id}`);
       continue;
     }
-    const state = await tokenState(entry.token);
+    // A token read from an environment variable is in the agent's
+    // environment, not this one's, so it cannot be checked from here.
+    const state = entry.fromEnv ? 'env' : await tokenState(entry.token);
     if (state === 'ended') {
       report('fail', agent.name, `${where} holds a token that has ended (revoked, or an older session's); run: npx innstance --agents ${agent.id}`);
       continue;
@@ -141,6 +143,7 @@ async function doctor(ctx, opts) {
     }
     const notes = [];
     if (state === 'unknown') notes.push('token not checked');
+    else if (state === 'env') notes.push('token read from an environment variable, not checked');
     else if (token && entry.token !== token) notes.push("signed in with its own token, not this machine's npx session");
     const skillDir = path.join(agent.skillsRoot(ctx), SKILL_NAME);
     const skill = readInstalled(skillDir);
@@ -149,9 +152,9 @@ async function doctor(ctx, opts) {
     else if (compareVersions(skill.version, pinned.version) < 0) notes.push(`skill ${skill.version} (older than ${pinned.version}; run npx innstance)`);
     else notes.push(`skill ${skill.version}`);
     const fileMode = ctx.platform === 'win32' ? null : modeOf(file);
-    const risk = tokenFileRisk(file, ctx.home);
+    const risk = !entry.fromEnv && tokenFileRisk(file, ctx.home);
     if (risk) report('warn', agent.name, `${risk}; keep it out of commits, or move it out of the repository`);
-    if (fileMode !== null && fileMode & 0o077) {
+    if (!entry.fromEnv && fileMode !== null && fileMode & 0o077) {
       report('warn', agent.name, `${where} holds a token and is readable by other users (mode ${fileMode.toString(8)}); run: npx innstance --agents ${agent.id}`);
     }
     report('ok', agent.name, `connected in ${where}; ${notes.join('; ')}`);
