@@ -472,6 +472,39 @@ else
   not_ok "deploy: keeps an existing impossible.toml, starts nothing unasked, attaches an app domain"
 fi
 
+# A domain attached before the edge: check exits 1 while / answers 404, or
+# while the certificate is pending, and the deploy itself still succeeded.
+dir=$(new_workdir)
+echo 'app = "legacy"' > "$dir/impossible.toml"
+if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=legacy \
+     INNSTANCE_ACTION_DOMAIN=api.example.com FAKE_DOMAIN_PLAN=address FAKE_SITE_CODE=404 \
+     FAKE_DOMAINS='[{"hostname":"api.example.com","is_custom":true}]' FAKE_DOMAIN_CONFIGURED=true &&
+   has_output "$dir" domain-status=active; then
+  ok "deploy: an older domain with a certificate is active even when / is not 200"
+else
+  not_ok "deploy: an older domain with a certificate is active even when / is not 200"
+fi
+dir=$(new_workdir)
+echo 'app = "legacy"' > "$dir/impossible.toml"
+if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=legacy \
+     INNSTANCE_ACTION_DOMAIN=api.example.com FAKE_DOMAIN_PLAN=address \
+     FAKE_DOMAINS='[{"hostname":"api.example.com","is_custom":true}]' &&
+   has_output "$dir" domain-status=pending_certificate; then
+  ok "deploy: an older domain still waiting for its certificate is pending, not a failure"
+else
+  not_ok "deploy: an older domain still waiting for its certificate is pending, not a failure"
+fi
+dir=$(new_workdir)
+echo 'app = "legacy"' > "$dir/impossible.toml"
+CLI_CALLED=1 rejected "deploy: a domain check with no answer to read stops the step" "$dir" \
+  INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=legacy INNSTANCE_ACTION_DOMAIN=api.example.com \
+  FAKE_DOMAIN_CHECK=broken FAKE_DOMAINS='[{"hostname":"api.example.com","is_custom":true}]'
+if grep -Fq 'Too many requests' "$test_root/out" && grep -Fq '(exit 2)' "$test_root/out"; then
+  ok "deploy: a domain check that fails shows what the CLI said"
+else
+  not_ok "deploy: a domain check that fails shows what the CLI said"
+fi
+
 dir=$(new_workdir)
 if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=probe \
      INNSTANCE_ACTION_START_COMMAND='./serve' INNSTANCE_ACTION_ALLOW_HTTP=1 \

@@ -125,7 +125,7 @@ trap 'echo "error: publish.sh stopped unexpectedly at line $LINENO" >&2' ERR
 # A first run usually ends at pending_verification with the DNS records to
 # create; the next run after they resolve finishes the attachment.
 attach_domain() {
-  local kind=$1 listed status configured check_hint
+  local kind=$1 listed status configured check_hint check_status=0
   local -a list_cmd add_cmd check_cmd
   # name and domain passed plain_value, so neither can read as a flag.
   if [[ $kind == site ]]; then
@@ -156,9 +156,17 @@ attach_domain() {
     fi
   fi
 
-  "$cli" "${check_cmd[@]}" > "$work/domain-check.json" ||
-    fail "could not check $domain on $kind $name"
-  configured=$(jq -r '.status.configured // false' "$work/domain-check.json")
+  # check exits 1 for a domain attached before the edge until its
+  # certificate is issued and / answers exactly 200, which an API that
+  # answers 404 at / never does. That is a finding about the domain, not a
+  # failed check, and the JSON it prints either way says which. So the
+  # answer decides; the step stops only when there is no answer to read.
+  "$cli" "${check_cmd[@]}" > "$work/domain-check.json" || check_status=$?
+  if ! configured=$(jq -r '.status.configured | if type == "boolean" then tostring else error("no status") end' \
+      "$work/domain-check.json" 2>/dev/null); then
+    cat "$work/domain-check.json"
+    fail "could not check $domain on $kind $name (exit $check_status); the CLI's answer is above"
+  fi
   if [[ $configured == true ]]; then
     set_output domain-status active
     summary "Custom domain: https://$domain"

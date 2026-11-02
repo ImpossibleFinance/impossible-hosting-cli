@@ -58,8 +58,24 @@ domain_add_answer() {
       "$host" "$host" "$host"
   fi
 }
+# FAKE_DOMAIN_PLAN=address answers like a domain attached before the edge:
+# the real check prints its JSON and then exits 1 unless the certificate is
+# issued and / answers exactly 200 (FAKE_SITE_CODE). FAKE_DOMAIN_CHECK=broken
+# prints no JSON at all.
 domain_check_answer() {
-  printf '{"hostname":"%s","status":{"configured":%s}}\n' "$1" "${FAKE_DOMAIN_CONFIGURED:-false}"
+  local configured=${FAKE_DOMAIN_CONFIGURED:-false} site_code=${FAKE_SITE_CODE:-200}
+  if [[ ${FAKE_DOMAIN_CHECK:-} == broken ]]; then
+    echo "Too many requests to Innstance right now."
+    exit 2
+  fi
+  if [[ ${FAKE_DOMAIN_PLAN:-edge} == address ]]; then
+    [[ $configured == true ]] || site_code=0
+    printf '{"dns_ok":true,"site_code":%s,"status":{"hostname":"%s","configured":%s,"records":{"a":["203.0.113.7"],"aaaa":[],"cname":{"name":"","target":"","apex":false}}}}\n' \
+      "$site_code" "$1" "$configured"
+    [[ $configured == true && $site_code == 200 ]] || exit 1
+    return 0
+  fi
+  printf '{"hostname":"%s","status":{"configured":%s}}\n' "$1" "$configured"
 }
 
 case "$1 ${2:-} ${3:-}" in
