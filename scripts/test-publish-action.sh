@@ -509,6 +509,7 @@ if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=api \
      INNSTANCE_ACTION_PORT=3000 INNSTANCE_ACTION_PACKAGES="$(printf 'nodejs  npm\nca-certificates\n')" \
      INNSTANCE_ACTION_START_COMMAND='node server.js' INNSTANCE_ACTION_WAIT_SECONDS=0 &&
    expect_log "$dir" \
+     'describe --json --app api' \
      'deploy --json --yes --app api --port 3000' \
      'machines install --app api -- nodejs npm ca-certificates' \
      'machines exec --app api -- sh -c <remote-stop.sh> innstance-action' \
@@ -535,6 +536,32 @@ else
   not_ok "deploy: keeps the port and size of an app that already exists"
 fi
 
+# The same app keeps its volume, named something other than the data
+# volume deploy adds to a file that declares none, also when port is set.
+dir=$(new_workdir)
+if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=running FAKE_APP_PORT=5000 \
+     INNSTANCE_ACTION_PORT=6000 \
+     FAKE_APP_VOLUMES='[{"id":"vol_1","name":"pgdata","size_gb":3,"mount_path":"/var/lib/pg","region":"iad","status":"created"}]' &&
+   expect_log "$dir" \
+     'describe --json --app running' \
+     'deploy --json --yes --app running --port 6000' \
+     'machines push --app running --to /app --yes-replace -- .' &&
+   expect_toml "$dir" "$(printf 'app = "running"\n\n[service]\ninternal_port = 6000\n\n[[volumes]]\nname = "pgdata"\nsize_gb = 3\nmount_path = "/var/lib/pg"\n')"; then
+  ok "deploy: keeps the volume of an app that already exists"
+else
+  not_ok "deploy: keeps the volume of an app that already exists"
+fi
+dir=$(new_workdir)
+CLI_CALLED=1 rejected "deploy: stops at a volume it cannot write down" "$dir" \
+  INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=running FAKE_APP_PORT=5000 \
+  FAKE_APP_VOLUMES='[{"name":"pg\"data","size_gb":3,"mount_path":"/var/lib/pg"}]'
+if expect_log "$dir" 'describe --json --app running' && [[ ! -e $dir/impossible.toml ]] &&
+   grep -Fq 'has a volume this action cannot describe in an impossible.toml' "$test_root/out"; then
+  ok "deploy: a volume it cannot describe deploys nothing"
+else
+  not_ok "deploy: a volume it cannot describe deploys nothing"
+fi
+
 dir=$(new_workdir)
 if run_action "$dir" INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=fresh &&
    expect_log "$dir" \
@@ -551,7 +578,7 @@ dir=$(new_workdir)
 CLI_CALLED=1 rejected "deploy: stops when it cannot tell whether the app exists" "$dir" \
   INNSTANCE_ACTION_MODE=deploy INNSTANCE_ACTION_NAME=unsure FAKE_DESCRIBE_FAIL=1
 if expect_log "$dir" 'describe --json --app unsure' && [[ ! -e $dir/impossible.toml ]] &&
-   grep -Fq 'Set port, or commit an impossible.toml' "$test_root/out"; then
+   grep -Fq 'its port and volume are unknown. Commit an impossible.toml' "$test_root/out"; then
   ok "deploy: an unknown app state deploys nothing and says how to proceed"
 else
   not_ok "deploy: an unknown app state deploys nothing and says how to proceed"

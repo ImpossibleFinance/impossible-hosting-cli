@@ -95,13 +95,14 @@ case "$1 ${2:-} ${3:-}" in
       "$name" "${FAKE_PUBLISH_LIVE:-true}" "${FAKE_PUBLISH_NOTICE:+\"$FAKE_PUBLISH_NOTICE\"}"
     ;;
   "describe "*)
-    # FAKE_APP_PORT: the app exists on that port. FAKE_DESCRIBE_FAIL: the
-    # lookup fails for another reason. Otherwise the app does not exist, in
-    # the words the real CLI uses.
+    # FAKE_APP_PORT: the app exists on that port, with the volumes in
+    # FAKE_APP_VOLUMES (a JSON array; the real CLI prints null for none).
+    # FAKE_DESCRIBE_FAIL: the lookup fails for another reason. Otherwise the
+    # app does not exist, in the words the real CLI uses.
     app=$(flag_value app "$@")
     if [[ -n ${FAKE_APP_PORT:-} ]]; then
-      printf '{"app":{"name":"%s","internal_port":%s,"cpu_kind":"performance","cpus":2,"memory_mb":4096}}\n' \
-        "$app" "$FAKE_APP_PORT"
+      printf '{"app":{"name":"%s","internal_port":%s,"cpu_kind":"performance","cpus":2,"memory_mb":4096},"volumes":%s}\n' \
+        "$app" "$FAKE_APP_PORT" "${FAKE_APP_VOLUMES:-null}"
     elif [[ -n ${FAKE_DESCRIBE_FAIL:-} ]]; then
       printf 'Error: describe logs for app "%s": log read returned HTTP 502\n' "$app" >&2
       exit 1
@@ -116,6 +117,13 @@ case "$1 ${2:-} ${3:-}" in
     # resizes it, so a file the test did not write must never carry them.
     if grep -q '^\[resources\]' impossible.toml && [[ ${FAKE_ALLOW_RESOURCES:-0} != 1 ]]; then
       echo "fake-innstance: impossible.toml would resize the app" >&2
+      exit 1
+    fi
+    # A file that declares no volume makes the real deploy add one named
+    # data, which an app that already holds another volume refuses.
+    if [[ ${FAKE_APP_VOLUMES:-null} != null && ${FAKE_APP_VOLUMES:-} != '[]' ]] &&
+       ! grep -q '^\[\[volumes\]\]' impossible.toml; then
+      echo 'Error: create volume "data": API error (409): An app supports one persistent volume.' >&2
       exit 1
     fi
     printf '{"id":"dep1","url":"%s","status":"live","machines":1%s}\n' \

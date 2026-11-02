@@ -315,27 +315,53 @@ publish() {
 # defaults. The port cannot be left out, because deploy always sends one
 # (8080 when nothing names it): unless the port input sets it, an app that
 # exists keeps the port the platform reports for it.
+#
+# The same goes for its volume. A file that declares none makes deploy add a
+# 1 GB volume named data, and an app holds one volume, so an app whose
+# volume has another name would refuse the deploy. The file names the
+# volume the app already has, which deploy then leaves as it is.
 write_app_config() {
-  local app_port=$port
-  if [[ -z $app_port ]]; then
-    if "$cli" describe --json --app "$name" > "$work/describe.json" 2> "$work/describe.err"; then
+  local app_port=$port exists=0 volume_count volume_name='' volume_mount='' volume_size=''
+  if "$cli" describe --json --app "$name" > "$work/describe.json" 2> "$work/describe.err"; then
+    exists=1
+  elif grep -Fq "describe app \"$name\": API error (404)" "$work/describe.err"; then
+    # The CLI's answer for an app that does not exist. Any other failure,
+    # including a change to this wording, stops below rather than guess.
+    echo "App $name does not exist yet; deploy creates it with the platform's defaults."
+  else
+    cat "$work/describe.err" >&2
+    fail "could not tell whether app $name already exists, so its port and volume are unknown. Commit an impossible.toml"
+  fi
+  if [[ $exists == 1 ]]; then
+    if [[ -z $app_port ]]; then
       app_port=$(jq -r '.app.internal_port // empty' "$work/describe.json" 2>/dev/null || true)
       [[ $app_port =~ ^[0-9]+$ && $app_port -ge 1 && $app_port -le 65535 ]] ||
         fail "app $name exists, but its port could not be read. Set port, or commit an impossible.toml"
-      echo "App $name exists; keeping its port $app_port and its size."
-    elif grep -Fq "describe app \"$name\": API error (404)" "$work/describe.err"; then
-      # The CLI's answer for an app that does not exist. Any other failure,
-      # including a change to this wording, stops below rather than guess.
-      echo "App $name does not exist yet; deploy creates it with the platform's defaults."
-    else
-      cat "$work/describe.err" >&2
-      fail "could not tell whether app $name already exists, so its port is unknown. Set port, or commit an impossible.toml"
     fi
+    volume_count=$(jq -r '.volumes // [] | length' "$work/describe.json" 2>/dev/null || true)
+    case $volume_count in
+      0) ;;
+      1)
+        volume_name=$(jq -r '.volumes[0].name // empty' "$work/describe.json")
+        volume_mount=$(jq -r '.volumes[0].mount_path // empty' "$work/describe.json")
+        volume_size=$(jq -r '.volumes[0].size_gb // empty' "$work/describe.json")
+        # Checked here because they are written into the file as they are.
+        [[ $volume_name =~ ^[a-z0-9_]+$ && $volume_mount =~ ^/[A-Za-z0-9._/-]*$ &&
+           $volume_size =~ ^[1-9][0-9]*$ ]] ||
+          fail "app $name has a volume this action cannot describe in an impossible.toml. Commit one that declares it"
+        ;;
+      *) fail "could not read the volumes of app $name. Commit an impossible.toml that declares its volume" ;;
+    esac
+    echo "App $name exists; deploying it on port $app_port, keeping its size${volume_name:+ and its volume $volume_name}."
   fi
   {
     printf 'app = "%s"\n' "$name"
     if [[ -n $app_port ]]; then
       printf '\n[service]\ninternal_port = %s\n' "$app_port"
+    fi
+    if [[ -n $volume_name ]]; then
+      printf '\n[[volumes]]\nname = "%s"\nsize_gb = %s\nmount_path = "%s"\n' \
+        "$volume_name" "$volume_size" "$volume_mount"
     fi
   } > impossible.toml
 }

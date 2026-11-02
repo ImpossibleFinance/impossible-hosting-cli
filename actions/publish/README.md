@@ -148,11 +148,13 @@ jobs:
 The action runs these steps, in this order:
 
 1. If the working directory has no `impossible.toml`, it writes one that
-   names only the app and its port. An app that already exists keeps its
-   size, and keeps its port unless `port` sets one; a new app gets the
-   platform's defaults, on port 8080 unless `port` sets one. With an
-   `impossible.toml`, every setting in it applies to the app (size, port,
-   autostop, environment, volumes), and `name` and `port` override it.
+   names only the app, its port and its volume. An app that already exists
+   keeps its size and its volume, and keeps its port unless `port` sets
+   one; a new app gets the platform's defaults, on port 8080 unless `port`
+   sets one, with the 1 GB `/data` volume every deploy adds to an app that
+   has none. With an `impossible.toml`, every setting in it applies to the
+   app (size, port, autostop, environment, volumes), and `name` and `port`
+   override it.
 2. `innstance deploy`, which creates the app or reuses its runner VM. On an
    app that exists, deploy restarts the VM, which ends every process on it,
    including one you started by hand. The app is down from here until step
