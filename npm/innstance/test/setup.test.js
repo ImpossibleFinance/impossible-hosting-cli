@@ -284,6 +284,54 @@ test('setup follows a symlinked config instead of replacing the link', { skip: p
   assert.equal(await main([], ctx), 0, text());
   assert.ok(fs.lstatSync(path.join(home, '.cursor', 'mcp.json')).isSymbolicLink());
   assert.ok(readJSON(path.join(dotfiles, 'mcp.json')).mcpServers.innstance);
+  assert.match(text(), /mcp\.json is a link: the token was written to .*dotfiles.*mcp\.json/);
+});
+
+test('setup will not put a token where git could commit it, unless --force', { skip: process.platform === 'win32' }, async (t) => {
+  const server = await startFakeServer();
+  t.after(server.close);
+  const home = tempHome(t);
+  // A dotfiles repository, with Cursor's config linked into it.
+  const dotfiles = path.join(home, 'dotfiles');
+  fs.mkdirSync(path.join(dotfiles, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(dotfiles, 'mcp.json'), '{}\n');
+  fs.mkdirSync(path.join(home, '.cursor'));
+  fs.symlinkSync(path.join(dotfiles, 'mcp.json'), path.join(home, '.cursor', 'mcp.json'));
+  const { ctx, err, text } = makeContext(home, server, { agents: ['cursor', 'claude'] });
+  assert.equal(await main([], ctx), 1, text());
+  assert.equal(fs.readFileSync(path.join(dotfiles, 'mcp.json'), 'utf8'), '{}\n', 'nothing was written into the repository');
+  assert.match(err.join('\n'), /Cursor: left .* alone: .*mcp\.json \(a link to .*dotfiles.*\) is inside the git repository at .*dotfiles, where the token could be committed; .*--force/);
+  assert.ok(tokensIn(home).claude, 'other agents are still connected');
+
+  const forced = makeContext(home, server);
+  assert.equal(await main(['--agents', 'cursor', '--force'], forced.ctx), 0, forced.text());
+  assert.ok(readJSON(path.join(dotfiles, 'mcp.json')).mcpServers.innstance);
+});
+
+test('setup does not sign in when the session file itself would sit in a git repository', async (t) => {
+  const server = await startFakeServer();
+  t.after(server.close);
+  const home = tempHome(t);
+  fs.mkdirSync(path.join(home, '.git')); // the whole home directory is a repository
+  const { ctx, err } = makeContext(home, server, { agents: ['cursor'] });
+  assert.equal(await main([], ctx), 1);
+  assert.match(err.join('\n'), /Not signed in: .*npx-session\.json is inside the git repository/);
+  assert.deepEqual(server.state.deviceNames, [], 'no session was minted');
+  assert.equal(fs.existsSync(sessionPath(ctx)), false);
+});
+
+test('setup and remove refuse to run as root in someone else\'s home', { skip: process.platform === 'win32' || process.getuid() === 0 }, async (t) => {
+  const server = await startFakeServer();
+  t.after(server.close);
+  const home = tempHome(t);
+  for (const command of [[], ['remove']]) {
+    const { ctx, err } = makeContext(home, server, { agents: ['cursor'] });
+    ctx.uid = 0; // sudo kept HOME, which belongs to the person running the tests
+    assert.equal(await main(command, ctx), 1);
+    assert.match(err.join('\n'), /Nothing was changed: this is running as root, but .* belongs to another user/);
+  }
+  assert.deepEqual(server.state.deviceNames, []);
+  assert.equal(fs.existsSync(path.join(home, '.cursor', 'mcp.json')), false);
 });
 
 test('CLAUDE_CONFIG_DIR, CODEX_HOME and XDG_CONFIG_HOME move the configs', async (t) => {

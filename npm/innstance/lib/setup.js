@@ -2,11 +2,12 @@
 
 const { AGENTS, detectAgents, readMCP, writeMCP } = require('./agents');
 const { whoami } = require('./account');
-const { tildify } = require('./context');
+const { sudoProblem, tildify } = require('./context');
+const { tokenFileRisk } = require('./fsutil');
 const { signIn } = require('./device');
 const { probeMCP } = require('./mcp');
 const { DEFAULT_ORIGIN, mcpURL } = require('./origin');
-const { deviceName, loadSession, machineDeviceId, newDeviceId, saveSession } = require('./session');
+const { deviceName, loadSession, machineDeviceId, newDeviceId, saveSession, sessionPath } = require('./session');
 const { fetchSkill, installSkill } = require('./skill');
 
 function names(agents) {
@@ -60,6 +61,11 @@ async function setup(ctx, opts) {
   const mcp = mcpURL(origin);
   let failures = 0;
 
+  const sudo = sudoProblem(ctx);
+  if (sudo) {
+    ctx.err(`Nothing was changed: ${sudo}`);
+    return 1;
+  }
   if (origin !== DEFAULT_ORIGIN) {
     ctx.err(`Using the control plane at ${origin}: your sign-in and agent configs point there, not at Innstance.`);
   }
@@ -85,6 +91,13 @@ async function setup(ctx, opts) {
 
   let session = null;
   if (!mcpMissing) {
+    // The session file holds the token too; refuse before signing in, not
+    // after a token exists that would then have nowhere safe to go.
+    const risk = tokenFileRisk(sessionPath(ctx), ctx.home);
+    if (risk && !opts.force) {
+      ctx.err(`Not signed in: ${risk}. Move it out of the repository, or re-run with --force to write it anyway.`);
+      return 1;
+    }
     try {
       session = await ensureSession(ctx, origin, opts);
     } catch (err) {
@@ -139,7 +152,7 @@ async function setup(ctx, opts) {
   for (const agent of targets) {
     const refreshed = refresh.includes(agent);
     try {
-      const result = await writeMCP(agent, ctx, mcp, session.token, { force: opts.force && !refreshed });
+      const result = await writeMCP(agent, ctx, mcp, session.token, { replaceForeign: opts.force && !refreshed, allowRepo: opts.force });
       const where = tildify(ctx, result.file);
       if (result.status === 'skipped') {
         failures++;
@@ -148,6 +161,7 @@ async function setup(ctx, opts) {
       }
       connected.push(agent);
       ctx.out(`  ${agent.name}: ${describeWrite(result, refreshed)} ${where}`);
+      if (result.linkedTo) ctx.out(`    ${where} is a link: the token was written to ${result.linkedTo}`);
     } catch (err) {
       failures++;
       ctx.err(`  ${agent.name}: ${err.message}`);

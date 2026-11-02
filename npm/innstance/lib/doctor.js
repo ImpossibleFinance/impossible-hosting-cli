@@ -5,7 +5,7 @@ const path = require('node:path');
 const { AGENTS, readMCP } = require('./agents');
 const { health, whoami } = require('./account');
 const { tildify } = require('./context');
-const { fileMode: modeOf } = require('./fsutil');
+const { fileMode: modeOf, tokenFileRisk } = require('./fsutil');
 const { probeMCP } = require('./mcp');
 const { DEFAULT_ORIGIN, mcpURL } = require('./origin');
 const { loadSession } = require('./session');
@@ -149,6 +149,8 @@ async function doctor(ctx, opts) {
     else if (compareVersions(skill.version, pinned.version) < 0) notes.push(`skill ${skill.version} (older than ${pinned.version}; run npx innstance)`);
     else notes.push(`skill ${skill.version}`);
     const fileMode = ctx.platform === 'win32' ? null : modeOf(file);
+    const risk = tokenFileRisk(file, ctx.home);
+    if (risk) report('warn', agent.name, `${risk}; keep it out of commits, or move it out of the repository`);
     if (fileMode !== null && fileMode & 0o077) {
       report('warn', agent.name, `${where} holds a token and is readable by other users (mode ${fileMode.toString(8)}); run: npx innstance --agents ${agent.id}`);
     }

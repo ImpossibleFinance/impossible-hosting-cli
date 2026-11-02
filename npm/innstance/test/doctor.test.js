@@ -149,3 +149,11 @@ test('doctor warns about a token file other users can read', { skip: process.pla
   assert.equal(await main(['doctor'], ctx), 0, text());
   assert.match(text(), /warn {2}Cursor: .*readable by other users \(mode 644\); run: npx innstance --agents cursor/);
 });
+
+test('doctor warns about a token file inside a git repository', async (t) => {
+  const { server, home } = await connected(t);
+  fs.mkdirSync(path.join(home, '.cursor', '.git'));
+  const { ctx, text } = makeContext(home, server);
+  assert.equal(await main(['doctor'], ctx), 0, text());
+  assert.match(text(), /warn {2}Cursor: .*mcp\.json is inside the git repository at .*\.cursor, where the token could be committed/);
+});

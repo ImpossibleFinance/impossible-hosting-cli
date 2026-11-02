@@ -5,7 +5,7 @@ const path = require('node:path');
 
 const jsonc = require('./jsonc');
 const toml = require('./toml');
-const { PRIVATE_FILE, exists, readTextIfExists, withFileLock, writeFileAtomic } = require('./fsutil');
+const { PRIVATE_FILE, exists, linkedTarget, readTextIfExists, tokenFileRisk, withFileLock, writeFileAtomic } = require('./fsutil');
 
 // The coding agents this package connects, and where each one keeps its
 // user-level MCP servers and skills. Everything is written at user scope (not
@@ -260,9 +260,19 @@ function readMCP(agent, ctx) {
 //   replaced   an entry that was not ours was overwritten (force)
 //   skipped    an innstance entry that points somewhere else, or runs a
 //              local command, was put there by someone else and is left
-//              alone unless force is set
-async function writeMCP(agent, ctx, url, token, { force = false } = {}) {
+//              alone unless replaceForeign is set; or the file sits in a git
+//              repository, where the token could be committed, and
+//              allowRepo is not set
+//
+// linkedTo names the real file when the config is a symlink, so the person
+// is told where the token went.
+async function writeMCP(agent, ctx, url, token, { replaceForeign = false, allowRepo = false } = {}) {
   const file = agent.configPath(ctx);
+  const risk = tokenFileRisk(file, ctx.home);
+  if (risk && !allowRepo) {
+    return { file, status: 'skipped', detail: `${risk}; move it out of the repository, or re-run with --force to write it anyway` };
+  }
+  const link = linkedTarget(file, ctx.home);
   let result;
   await withFileLock(file, async (real) => {
     const before = readTextIfExists(real);
@@ -270,12 +280,13 @@ async function writeMCP(agent, ctx, url, token, { force = false } = {}) {
     try {
       const entry = before === null ? null : agent.readEntry(before);
       const ours = Boolean(entry) && entry.url === url;
-      if (entry && !ours && !force) {
+      if (entry && !ours && !replaceForeign) {
         result = { file, status: 'skipped', detail: `its "innstance" server ${describeEntry(entry)}; re-run with --force to replace it` };
         return;
       }
       after = ours ? agent.updateEntry(before, url, token) : agent.editEntry(before, url, token);
       result = { file, status: !entry ? 'added' : !ours ? 'replaced' : after === before ? 'unchanged' : 'updated' };
+      if (link) result.linkedTo = link;
     } catch (err) {
       throw new Error(`${file} was not changed: ${err.message}`);
     }

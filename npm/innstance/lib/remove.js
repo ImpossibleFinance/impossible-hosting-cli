@@ -2,7 +2,7 @@
 
 const { AGENTS, removeMCP } = require('./agents');
 const { logout } = require('./account');
-const { tildify } = require('./context');
+const { sudoProblem, tildify } = require('./context');
 const { mcpURL } = require('./origin');
 const { clearSession, loadSession, savedOrigins } = require('./session');
 const { removeSkill } = require('./skill');
@@ -18,6 +18,12 @@ async function remove(ctx, opts) {
   const everything = !opts.agents;
   const agents = opts.agents || AGENTS;
   let failures = 0;
+
+  const sudo = sudoProblem(ctx);
+  if (sudo) {
+    ctx.err(`Nothing was changed: ${sudo}`);
+    return 1;
+  }
 
   for (const agent of agents) {
     try {

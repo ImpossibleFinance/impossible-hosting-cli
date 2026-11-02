@@ -151,6 +151,47 @@ async function withFileLock(target, fn, { waitMs = 5000, staleMs = 10000 } = {})
   }
 }
 
+// gitWorkTree returns the directory of the git work tree that holds file,
+// found by walking up from it looking for .git (a directory, or the file a
+// worktree or submodule has), or null.
+function gitWorkTree(file) {
+  let dir = path.dirname(path.resolve(file));
+  for (;;) {
+    if (exists(path.join(dir, '.git'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+// linkedTarget returns the real file when file, or a directory between it
+// and home, is a symlink (a dotfiles setup), and null otherwise. Links above
+// home (such as macOS's /var) are the system's, not the person's.
+function linkedTarget(file, home) {
+  const stop = path.resolve(home);
+  for (let p = path.resolve(file); p !== stop && path.dirname(p) !== p; p = path.dirname(p)) {
+    try {
+      if (fs.lstatSync(p).isSymbolicLink()) return resolveWriteTarget(file);
+    } catch {
+      // not there yet: nothing to follow
+    }
+  }
+  return null;
+}
+
+// tokenFileRisk explains why a token written to file could leak, or returns
+// null. The case it exists for is a dotfiles repository: a config kept in
+// one, directly or through a symlink into it, can be committed and pushed,
+// and a session token that never expires stays live in a public repository
+// until someone notices. Writes are followed through links (see
+// resolveWriteTarget), so the check looks at where the bytes really land.
+function tokenFileRisk(file, home) {
+  const repo = gitWorkTree(resolveWriteTarget(file));
+  if (!repo) return null;
+  const link = linkedTarget(file, home);
+  return `${link ? `${file} (a link to ${link})` : file} is inside the git repository at ${repo}, where the token could be committed`;
+}
+
 function fileMode(file) {
   try {
     return fs.statSync(file).mode & 0o777;
@@ -170,4 +211,7 @@ module.exports = {
   writeFileAtomic,
   withFileLock,
   fileMode,
+  gitWorkTree,
+  linkedTarget,
+  tokenFileRisk,
 };

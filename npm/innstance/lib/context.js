@@ -17,6 +17,7 @@ function defaultContext() {
     env: process.env,
     hostname: os.hostname(),
     nodeVersion: process.versions.node,
+    uid: typeof process.getuid === 'function' ? process.getuid() : null,
     out: (line = '') => process.stdout.write(line + '\n'),
     err: (line = '') => process.stderr.write(line + '\n'),
     openBrowser: (url) => openBrowser(url, process.platform, process.env),
@@ -90,6 +91,22 @@ function findOnPath(name, env, platform) {
   return null;
 }
 
+// sudoProblem explains why this run must not write anything, or returns
+// null. Run as root (sudo) with HOME still pointing at someone else's home,
+// every file written there would become root-owned and owner-only, and the
+// agents, running as that person, could no longer read their own configs.
+function sudoProblem(ctx) {
+  if (ctx.uid !== 0) return null;
+  let owner;
+  try {
+    owner = fs.statSync(ctx.home).uid;
+  } catch {
+    return null;
+  }
+  if (owner === 0) return null;
+  return `this is running as root, but ${ctx.home} belongs to another user. Run it again without sudo, as that user.`;
+}
+
 // tildify shortens a path under home for display.
 function tildify(ctx, p) {
   const rel = path.relative(ctx.home, p);
@@ -97,4 +114,4 @@ function tildify(ctx, p) {
   return p;
 }
 
-module.exports = { defaultContext, openBrowser, findOnPath, tildify };
+module.exports = { defaultContext, openBrowser, findOnPath, tildify, sudoProblem };
