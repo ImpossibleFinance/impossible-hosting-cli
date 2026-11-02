@@ -1,0 +1,240 @@
+# Innstance publish action
+
+A GitHub Action that puts work live on Innstance from a workflow, and
+optionally on your own domain. It installs the CLI with the same signature
+and checksum checks as the installer, then runs one of three modes:
+
+- `publish`: static files, no machine. One self-contained HTML page, or PDFs
+  and images.
+- `deploy`: an app. The action pushes a directory to the app's runner VM,
+  starts it, and waits until it answers.
+- `install`: only installs the verified CLI, so later steps can run
+  `innstance` themselves.
+
+For getting work out of a sandbox (InstaBox, E2B, Daytona, Fly Sprites,
+Vercel Sandbox) first, see [From any sandbox to your domain](../../docs/sandbox-to-domain.md).
+
+## Quick start
+
+1. Create a token for the workflow and save it as a repository secret named
+   `INNSTANCE_TOKEN`:
+
+   ```sh
+   innstance tokens create --name github-actions --expires-in 90
+   ```
+
+2. Add a workflow. Replace `<commit-sha>` with a full 40-character commit of
+   this repository (see [Pin the action](#pin-the-action)).
+
+   ```yaml
+   name: publish
+   on:
+     push:
+       branches: [main]
+   permissions:
+     contents: read
+   jobs:
+     publish:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+           with:
+             persist-credentials: false
+         - uses: ImpossibleFinance/impossible-hosting-cli/actions/publish@<commit-sha>
+           id: innstance
+           with:
+             token: ${{ secrets.INNSTANCE_TOKEN }}
+             name: q3-report
+             path: report.html
+             domain: report.example.com
+         - run: echo "Live at $URL"
+           env:
+             URL: ${{ steps.innstance.outputs.url }}
+   ```
+
+The site answers at the `url` output straight away. The custom domain
+follows the DNS steps below.
+
+## Publish static files
+
+`path` takes files, globs, or a folder, one per line. Files appear in the
+order you list them. A glob expands in name order.
+
+```yaml
+- uses: ImpossibleFinance/impossible-hosting-cli/actions/publish@<commit-sha>
+  with:
+    token: ${{ secrets.INNSTANCE_TOKEN }}
+    name: menu
+    path: |
+      cover.pdf
+      courses/*.pdf
+```
+
+Static publishing accepts what `innstance publish` accepts:
+
+- exactly one HTML file, served as the page;
+- several PDFs, combined into one document;
+- PDFs and images, shown as one scrolling page;
+- a single PDF or image, served directly.
+
+Running the workflow again with the same `name` replaces the whole site.
+
+A folder is passed to the CLI unchanged. The current CLI refuses a folder
+and says what it accepts instead, and your site is not changed. A website
+made of several files (HTML plus CSS, JavaScript and assets) needs
+`mode: deploy` today.
+
+## Deploy an app
+
+```yaml
+- uses: ImpossibleFinance/impossible-hosting-cli/actions/publish@<commit-sha>
+  with:
+    token: ${{ secrets.INNSTANCE_TOKEN }}
+    mode: deploy
+    name: my-api
+    path: .
+    port: 3000
+    packages: nodejs npm
+    start-command: npm ci --omit=dev && exec node server.js
+    health-path: /healthz
+    domain: api.example.com
+```
+
+The action runs these steps, in this order:
+
+1. `innstance init --app <name>` if the working directory has no
+   `impossible.toml`. With one, its settings apply, and `name` and `port`
+   override them.
+2. `innstance deploy`, which creates the app or reuses its runner VM.
+3. It stops the process that an earlier run of this action started. It finds
+   that process by a marker in its environment, not by a pid file.
+4. `innstance machines install` for `packages`.
+5. `innstance machines push` of `path` into `remote-dir` (default `/app`).
+   Push skips `.git`, `node_modules`, `.env*`, `impossible.toml` and anything
+   your `.gitignore`, `.dockerignore` or `.impignore` excludes. List the
+   files your app writes at runtime in `.ifhost-state-paths` so a push keeps
+   them.
+6. It runs `start-command` with `sh` in `remote-dir`, detached, logging to
+   `/tmp/innstance-action.log` on the VM.
+7. It waits up to `wait-seconds` for `health-path` to answer 2xx or 3xx. If
+   it never does, the step fails and prints the end of the app log.
+
+The app must listen on `0.0.0.0` (or `::`), not `127.0.0.1`, on the port
+the app is configured for. Without `start-command`, the files are pushed and
+nothing is started.
+
+## Custom domains
+
+Set `domain` to attach a hostname to the site or app. Your plan must
+include custom domains.
+
+- **First run:** Innstance needs proof that you control the domain. The
+  step succeeds with `domain-status: pending_verification`. The DNS records
+  to create appear in the job summary and as a warning.
+- **After the records resolve:** run the workflow again. The domain is
+  attached, and `domain-status` becomes `active`, or `pending_certificate`
+  for the minutes until its certificate is issued.
+- **Later runs:** the action only checks a domain that is already attached.
+
+Diagnose a domain from your machine with
+`innstance sites domains check <site> <hostname>` or
+`innstance machines domains check <hostname> --app <app>`.
+
+## Use the CLI in your own steps
+
+```yaml
+- uses: ImpossibleFinance/impossible-hosting-cli/actions/publish@<commit-sha>
+  with:
+    mode: install
+- run: innstance sites list
+  env:
+    IMPOSSIBLE_API_TOKEN: ${{ secrets.INNSTANCE_TOKEN }}
+```
+
+`innstance` and `ifhost` are on `PATH` for every later step of the job.
+Automatic updates are off for the rest of the job (`IFHOST_AUTO_UPDATE=0`),
+so every step runs the build that was verified.
+
+## Inputs
+
+| Input | Default | Used by | Meaning |
+| --- | --- | --- | --- |
+| `mode` | `publish` | all | `publish`, `deploy` or `install`. |
+| `token` | | publish, deploy | Innstance API token. Pass it from a secret. |
+| `name` | | publish, deploy | Site or app name. The public address is built from it. |
+| `path` | | publish, deploy | publish: files, globs or a folder, one per line. deploy: the directory to push (default: the working directory). |
+| `domain` | | publish, deploy | Custom hostname to attach. |
+| `working-directory` | `.` | publish, deploy | Directory that `path` and `impossible.toml` are relative to. |
+| `start-command` | | deploy | Command that starts the app, run with `sh` in `remote-dir`. |
+| `remote-dir` | `/app` | deploy | Absolute directory on the VM. |
+| `port` | | deploy | Port the app listens on. |
+| `packages` | | deploy | Debian packages to install before starting. |
+| `health-path` | `/` | deploy | Path that must answer 2xx or 3xx. |
+| `wait-seconds` | `120` | deploy | How long to wait for `health-path`; `0` skips the check. |
+| `api-url` | | all | Control-plane origin for staging or self-hosted installs. |
+| `cli-build-id` | | all | Refuse any CLI release except this build ID. |
+
+## Outputs
+
+| Output | Meaning |
+| --- | --- |
+| `url` | Address the site or app answers at. |
+| `domain-url` | `https://` address of `domain`, when one was given. |
+| `domain-status` | `active`, `pending_certificate` or `pending_verification`. |
+| `cli-build-id` | Build ID of the verified CLI the job used. |
+
+## Security
+
+### Pin the action
+
+Reference the action by a full commit SHA, never by a branch. The commit
+also pins the release key in [`release-signers`](../../release-signers)
+that the CLI is verified against, so pinning the commit pins the trust
+anchor too.
+
+### What is verified
+
+The action does not pipe anything into a shell. It runs these checks before
+it runs the CLI:
+
+1. It fetches `/dl/release.txt` and its SSHSIG.
+2. It verifies the signature against the pinned key.
+3. It parses the signed record strictly.
+4. It checks the downloaded archive against the SHA-256 in that record.
+5. It checks that the archive holds exactly one regular file.
+
+A compromised release origin cannot swap the key along with the binary. It
+could still serve an older signed release. Set `cli-build-id` if a workflow
+must run one exact build.
+
+### The token
+
+- The token goes only to the publish or deploy step. The install step and
+  later steps do not get it.
+- The action masks the token in the log, even when it comes from another
+  step's output rather than a secret.
+- Use a dedicated token with an expiry. Revoke it with
+  `innstance tokens revoke <id>`.
+- GitHub gives no secrets to workflows triggered by pull requests from
+  forks. In that case the action stops with an error that says so, and
+  publishes nothing.
+
+### Inputs
+
+Inputs reach the action's scripts only as environment variables. No input
+value is placed inside shell code.
+
+## Runners
+
+GitHub-hosted Linux and macOS runners work as they are. A self-hosted
+runner needs these tools:
+
+- bash
+- curl
+- OpenSSH `ssh-keygen` 8.1 or later
+- tar
+- jq
+- `sha256sum` or `shasum`
+
+Windows runners are not supported. Install with `install.ps1` from the
+release origin instead.

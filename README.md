@@ -22,6 +22,26 @@ sh "$installer"
 Windows users can inspect and run
 [`install.ps1`](https://innstance.impossibuild.ai/install.ps1) instead.
 
+## Publish from GitHub Actions or a sandbox
+
+[`actions/publish`](actions/publish/README.md) is a GitHub Action. It
+installs the CLI with the same signature and checksum checks as the
+installer, using the key pinned in this repository. Then it publishes
+files, or deploys an app, and can attach your own domain:
+
+```yaml
+- uses: ImpossibleFinance/impossible-hosting-cli/actions/publish@<commit-sha>
+  with:
+    token: ${{ secrets.INNSTANCE_TOKEN }}
+    name: q3-report
+    path: report.html
+    domain: report.example.com
+```
+
+[From any sandbox to your domain](docs/sandbox-to-domain.md) has recipes
+for getting an agent's work out of InstaBox, E2B, Daytona, Fly Sprites and
+Vercel Sandbox, and onto your domain.
+
 The installer fetches `/dl/release.txt` and `/dl/release.txt.sshsig`, verifies
 the SSHSIG with the public key in `release-signers`, selects one of the six
 signed artifact digests, and downloads that archive from `/dl`. The same

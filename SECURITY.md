@@ -55,10 +55,30 @@ transparency log. Repository administrators and GitHub remain trusted, and an
 audit outage longer than artifact retention fails closed until an authorized
 review updates the committed bootstrap checkpoint.
 
+## The publish action
+
+`actions/publish/install-cli.sh` repeats the installer's checks inside
+GitHub Actions. It verifies the SSHSIG against `release-signers` at the
+commit the workflow pinned, not against a key fetched from the release
+origin. Then it checks the archive against the signed SHA-256 and requires
+exactly one regular file in the archive. It runs the binary only after all
+of that passes.
+
+Like the installer, it cannot tell the newest signed release from an older
+one. A workflow that must run one exact build sets `cli-build-id`.
+
+The account token goes only to the publish or deploy step. The action
+masks it in the log, and later steps never receive it.
+
+A workflow pinned to a commit keeps that commit's key. After a key
+rotation, those workflows fail closed until they move to a commit that
+carries the new key.
+
 ## Changes to trust material
 
-Changes to `release-signers`, `channel-state.json`, the verifier, or the audit
-workflow require CODEOWNER review and protected-branch enforcement. Rotating
+Changes to `release-signers`, `channel-state.json`, the verifier, the
+publish action's installer, or the audit workflow require CODEOWNER review
+and protected-branch enforcement. Rotating
 the signing key requires first shipping clients and installers that trust the
 new key, then deliberately replacing this repository's anchor. Never accept an
 unsigned transition or reset the checkpoint merely to make a rollback alarm
