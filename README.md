@@ -6,6 +6,15 @@ command-line tool, which CLIs installed before the rename still run as
 from the same origin as the API. This repository does not build or publish
 binaries and does not hold the release signing seed.
 
+It is also the source of the `innstance` npm package, which is not published
+yet. That package is pure JavaScript and contains no binary. It signs a
+machine in and connects coding agents (Claude Code, Codex, Cursor, OpenCode)
+to the Innstance MCP endpoint. Once it is published, with npm provenance from
+this public repository, the command will be `npx innstance`. Until then, do
+not install anything called `innstance` from npm. See
+[`npm/innstance`](npm/innstance/README.md) and
+[`npm/innstance/RELEASING.md`](npm/innstance/RELEASING.md).
+
 ## Install
 
 Download and inspect the installer before running it:

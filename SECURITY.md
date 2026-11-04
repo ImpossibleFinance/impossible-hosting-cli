@@ -103,6 +103,51 @@ new key, then deliberately replacing this repository's anchor. Never accept an
 unsigned transition or reset the checkpoint merely to make a rollback alarm
 pass.
 
+## The `innstance` npm package
+
+`npm/innstance` is a separate trust path from the signed CLI channel above.
+It never downloads, verifies or runs the CLI binary. It is not published yet;
+until it is, nothing called `innstance` on npm comes from this repository.
+Once published, its trust properties are:
+
+- **Publishing.** The package is published only by
+  `.github/workflows/npm-publish.yml`, through npm trusted publishing with
+  provenance. No npm token is stored in this repository. npm accepts a
+  publish from that workflow file in the `npm` environment, whatever branch
+  it runs from. So the trust boundary is the `npm` environment's protection
+  rules (deployment limited to `npm-v*` tags, a required reviewer who cannot
+  approve their own run), the tag ruleset for `npm-v*`, and the trusted
+  publisher settings on npmjs.com (see `npm/innstance/RELEASING.md`). The
+  workflow's own checks (the tag on a commit already on `main`, the
+  `NPM_TRUSTED_PUBLISHING` switch) catch mistakes. They are not a boundary,
+  because a branch can change them.
+- **Contents.** The package has no dependencies, no install scripts and no
+  native code. Tests enforce this, and CI checks the tarball's file list. Its
+  one command is `innstance-setup`, so a global install never shadows the
+  signed `innstance` CLI.
+- **Skill pin.** The skill is installed from one pinned commit of the public
+  skill repository, and that commit must be on its `main`. Each file is
+  checked against a SHA-256 pinned in `lib/skill-pin.json`. Because those
+  hashes ship in a provenance-attested package rather than beside the files
+  they describe, a change to the skill repository cannot alter what a
+  published version installs.
+- **Credentials.** The token is the control plane's per-device session
+  (`cli-npx-<os>-<host>-<id>`), separate from the Go CLI's session. It is
+  written owner-only (`0600`) into the agent configs and
+  `~/.impossible/npx-session.json`. A config whose real file is inside a git
+  repository is not written without `--force`. The token is never printed,
+  never sent to an origin other than the one that issued it, and never sent
+  across a redirect. The approval URL from the device flow must be
+  `<origin>/auth/device` exactly, or the package does not open or print it.
+  Today that session never expires and is not scoped. The release checklist
+  makes the token model a decision to take before the first publish.
+
+Whoever controls the npm package's trusted-publisher configuration, the `npm`
+environment's protection rules, or this repository's `main` branch and tag
+rules can publish a malicious version. Changes to the publish workflow, the
+skill pin, and the package's network or file-writing code need the same
+CODEOWNER review as the release trust material.
+
 ## Reporting a vulnerability
 
 Do not disclose a suspected release compromise in a public issue. Contact the

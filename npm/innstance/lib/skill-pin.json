@@ -1,0 +1,10 @@
+{
+  "repository": "ImpossibleFinance/impossible-hosting-skill",
+  "commit": "b1038fd2156bb5052ea800c7cc8906e4d9579352",
+  "version": "20260924-1",
+  "files": {
+    "SKILL.md": "c2b1c07862f97fd523e819cd65a4fc9de1a0aa868b8f568433671066175798cd",
+    "RUNBOOK.md": "bc8a73cf557a9a096d577227ed01a5b4702ca5e17ab126a0b702665814d71bef",
+    "manifest.json": "a96ddc211f41a221e158ef36edd8789a2ef390ca7638e33aea836681a5e7ffdc"
+  }
+}

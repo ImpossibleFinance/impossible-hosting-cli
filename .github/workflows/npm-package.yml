@@ -1,0 +1,135 @@
+name: npm-package
+
+# Tests npm/innstance. The workflow runs on every pull request and every push
+# to main, with no paths filter, so its "result" job always reports and can
+# be made a required check: a required check from a path-filtered workflow
+# would leave every pull request that does not touch npm/ waiting forever.
+# The test jobs themselves run only when the package, its workflows or the
+# .gitattributes that keeps it LF changed; otherwise they are skipped, and
+# "result" passes.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      npm: ${{ steps.diff.outputs.npm }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Did the package or its workflows change?
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then base="$PR_BASE"; else base="$PUSH_BEFORE"; fi
+          # No usable base (a new branch, a force push): test everything.
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "npm=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$base" "$GITHUB_SHA")
+          if grep -Eq '^(npm/|\.github/workflows/npm-|\.gitattributes$)' <<< "$changed"; then
+            echo "npm=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "npm=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.npm == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: ['18', '20', '22', '24']
+        include:
+          - os: macos-latest
+            node: '22'
+          - os: windows-latest
+            node: '22'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: npm/innstance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Run the package tests against a fake control plane
+        run: npm test
+
+  contents:
+    needs: changes
+    if: needs.changes.outputs.npm == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: npm/innstance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: The pinned skill is on the skill repository's main and matches what GitHub serves
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # only raises the API rate limit
+        run: node scripts/pin-skill.js --check
+      - name: The tarball holds only the entry point, the library and the README
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > "$RUNNER_TEMP/pack.json"
+          node -e '
+            // npm 10 and 11 print an array; npm 12 an object keyed by name.
+            const parsed = require(process.argv[1]);
+            const pack = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
+            const bad = pack.files.map((f) => f.path).filter((p) => !/^(bin|lib)\/[^/]+\.(js|json)$|^README\.md$|^package\.json$/.test(p));
+            if (bad.length) { console.error("unexpected files in the package:", bad); process.exit(1); }
+            console.log(pack.files.map((f) => f.path).join("\n"));
+          ' "$RUNNER_TEMP/pack.json"
+
+  # The one job to require on main. It passes when every job above passed or
+  # was skipped because nothing it tests changed, and fails otherwise.
+  result:
+    if: always()
+    needs: [changes, test, contents]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every npm-package job passed or was not needed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *)
+                echo "an npm-package job ended with: $result" >&2
+                exit 1
+                ;;
+            esac
+          done

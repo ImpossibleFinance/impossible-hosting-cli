@@ -1,0 +1,70 @@
+'use strict';
+
+// The promise this package makes is "nothing native to install": pure
+// JavaScript, Node built-ins only, no dependencies and no install scripts.
+// These checks keep that promise from eroding one convenient import at a time.
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+
+const root = path.join(__dirname, '..');
+const pkg = require('../package.json');
+
+function shippedFiles() {
+  const out = [];
+  for (const dir of ['bin', 'lib']) {
+    for (const name of fs.readdirSync(path.join(root, dir))) out.push(path.join(dir, name));
+  }
+  return out;
+}
+
+test('the package has no dependencies and runs no install scripts', () => {
+  for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies', 'bundleDependencies', 'bundledDependencies', 'devDependencies']) {
+    assert.equal(pkg[field], undefined, field);
+  }
+  for (const hook of ['preinstall', 'install', 'postinstall', 'prepare', 'prepublish']) {
+    assert.equal(pkg.scripts[hook], undefined, hook);
+  }
+  assert.equal(pkg.name, 'innstance');
+  // One bin, deliberately not called "innstance": npx runs a package's only
+  // bin whatever its name, so `npx innstance` works, while `npm i -g
+  // innstance` cannot put a shim named innstance ahead of the signed CLI on
+  // PATH.
+  assert.deepEqual(pkg.bin, { 'innstance-setup': 'bin/innstance-setup.js' });
+  assert.equal(pkg.engines.node, '>=18');
+  assert.deepEqual(pkg.files, ['bin/', 'lib/', 'README.md']);
+  // npm provenance ties the published tarball to this repository and path.
+  assert.equal(pkg.repository.url, 'git+https://github.com/ImpossibleFinance/impossible-hosting-cli.git');
+  assert.equal(pkg.repository.directory, 'npm/innstance');
+});
+
+test('shipped code is JavaScript that requires only Node built-ins and itself', () => {
+  for (const file of shippedFiles()) {
+    assert.match(file, /\.(js|json)$/, `${file} is not JavaScript or JSON`);
+    if (!file.endsWith('.js')) continue;
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
+    for (const m of source.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)) {
+      const spec = m[1];
+      assert.ok(spec.startsWith('node:') || spec.startsWith('./') || spec.startsWith('../'), `${file} requires ${spec}`);
+    }
+    assert.doesNotMatch(source, /\bimport\s*\(|\bprocess\.binding\b|\.node['"]/, `${file} loads something dynamically`);
+  }
+});
+
+test('the entry point is executable through npx', () => {
+  const entry = path.join(root, pkg.bin['innstance-setup']);
+  const bin = fs.readFileSync(entry, 'utf8');
+  assert.ok(bin.startsWith('#!/usr/bin/env node\n'));
+  if (process.platform !== 'win32') {
+    assert.ok(fs.statSync(entry).mode & 0o111, `${pkg.bin['innstance-setup']} must be executable`);
+  }
+});
+
+test('the repository checks the package out with LF endings everywhere', () => {
+  // Without this a Windows checkout (core.autocrlf) turns the shebang line
+  // into "node\r", which the test above catches and POSIX shells cannot run.
+  const attributes = fs.readFileSync(path.join(root, '..', '..', '.gitattributes'), 'utf8');
+  assert.match(attributes, /^npm\/\*\* .*\beol=lf\b/m);
+});
